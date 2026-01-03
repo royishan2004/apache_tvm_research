@@ -1,32 +1,62 @@
+import sys
 import time
 import numpy as np
 import tvm
 from tvm.runtime import device
-from research.workloads.common.matmul_templates import matmul_tir
 
-B = 128
-H = 768
+# ---------------------------------------------
+# Variant registry
+# ---------------------------------------------
+VARIANTS = {
+    "baseline": "baseline",
 
-# Choose which kernel to test
-USE_SCHEDULED = False
+    # K-dimension unrolling
+    "k16": "research.workloads.bert.matmul.qkv_matmul_sched_k16",
+    "k32": "research.workloads.bert.matmul.qkv_matmul_sched_k32",
+    "k64": "research.workloads.bert.matmul.qkv_matmul_sched_k64",
 
-# -----------------------------
-# Load kernel
-# -----------------------------
-if USE_SCHEDULED:
-    from research.workloads.bert.matmul.qkv_matmul_sched_v1 import sch
-    mod = sch.mod
-else:
+    # Parallelism / vectorization
+    "parallel": "research.workloads.bert.matmul.qkv_matmul_sched_parallel",
+    "vec_j": "research.workloads.bert.matmul.qkv_matmul_sched_vec_j",
+    "vec_k": "research.workloads.bert.matmul.qkv_matmul_sched_vec_k",
+}
+
+# ---------------------------------------------
+# CLI handling
+# ---------------------------------------------
+if len(sys.argv) != 2 or sys.argv[1] not in VARIANTS:
+    print("Usage:")
+    print("  python3 -m research.workloads.bert.matmul.qkv_run <variant>")
+    print("\nAvailable variants:")
+    for k in VARIANTS:
+        print(" ", k)
+    sys.exit(1)
+
+variant = sys.argv[1]
+print(f"Running variant: {variant}")
+
+# ---------------------------------------------
+# Load module
+# ---------------------------------------------
+B, H = 128, 768
+
+if variant == "baseline":
+    from research.workloads.common.matmul_templates import matmul_tir
     mod = matmul_tir(B, H, H)
+else:
+    module_path = VARIANTS[variant]
+    sched_mod = __import__(module_path, fromlist=["sch"])
+    sch = sched_mod.sch
+    mod = sch.mod
 
-# -----------------------------
+# ---------------------------------------------
 # Build
-# -----------------------------
+# ---------------------------------------------
 rt_mod = tvm.build(mod, target="llvm")
 
-# -----------------------------
+# ---------------------------------------------
 # Allocate data
-# -----------------------------
+# ---------------------------------------------
 dev = device("cpu", 0)
 
 A_np = np.random.rand(B, H).astype("float32")
@@ -37,21 +67,21 @@ A = tvm.nd.array(A_np, dev)
 B = tvm.nd.array(B_np, dev)
 C = tvm.nd.array(C_np, dev)
 
-# -----------------------------
-# Run & time
-# -----------------------------
+# ---------------------------------------------
+# Execute & time
+# ---------------------------------------------
 f = rt_mod["main"]
 
-# Warmup
+# Warm-up
 for _ in range(5):
     f(A, B, C)
 
-# Timing
+# Timed runs
 n = 10
 start = time.time()
 for _ in range(n):
     f(A, B, C)
 end = time.time()
 
-latency = (end - start) * 1e6 / n
-print("Latency (us):", latency)
+latency_us = (end - start) * 1e6 / n
+print(f"Latency (us): {latency_us:.3f}")
