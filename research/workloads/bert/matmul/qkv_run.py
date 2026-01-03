@@ -19,6 +19,13 @@ VARIANTS = {
     "parallel": "research.workloads.bert.matmul.qkv_matmul_sched_parallel",
     "vec_j": "research.workloads.bert.matmul.qkv_matmul_sched_vec_j",
     "vec_k": "research.workloads.bert.matmul.qkv_matmul_sched_vec_k",
+
+    #MIXED
+    "parallel_k16": "research.workloads.bert.matmul.qkv_matmul_sched_parallel_k16",
+    "parallel_vec_j": "research.workloads.bert.matmul.qkv_matmul_sched_parallel_vec_j",
+    "vec_j_k16": "research.workloads.bert.matmul.qkv_matmul_sched_vec_j_k16",
+    "full": "research.workloads.bert.matmul.qkv_matmul_sched_full",
+
 }
 
 # ---------------------------------------------
