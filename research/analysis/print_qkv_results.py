@@ -34,5 +34,5 @@ df = df[cols]
 pd.set_option("display.max_rows", None)
 pd.set_option("display.float_format", "{:.2f}".format)
 
-print("\n=== BERT QKV MatMul Results (sorted by latency) ===\n")
+print("\n=== BERT QKV MatMul Results ===\n")
 print(tabulate(df, headers="keys", tablefmt="grid", showindex=False))

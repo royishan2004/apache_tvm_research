@@ -16,6 +16,7 @@ The primary goal is to **extract real Transformer MatMul workloads, create canon
 ### Phase 0 — Environment Validation
 
 ```bash
+source venv/bin/activate
 python3 research/workloads/common/env_check.py
 ```
 **Why:** Verify that TVM, LLVM, and Python bindings are correctly set up.
