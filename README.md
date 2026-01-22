@@ -1,94 +1,99 @@
 # TVM-Based Transformer MatMul Optimization (Research Workspace)
 
 ## Objective
-This project analyzes and optimizes **Transformer MatMul kernels (starting with BERT)** using **TVM TIR scheduling**, focusing on correctness, performance, and reproducibility.
 
-The primary goal is to **extract real Transformer MatMul workloads, create canonical TIR kernels, and systematically evaluate scheduling strategies**.
+This project studies and optimizes **Transformer MatMul kernels (starting with BERT)** using **Apache TVM (TIR + MetaSchedule)**.
+
+The primary goals are to:
+
+- Extract **real Transformer MatMul workloads**
+- Construct **canonical TIR kernels**
+- Systematically evaluate **manual scheduling strategies**
+- Compare against **automated schedule search (MetaSchedule)**
+- Produce **reproducible, quantitative performance results**
+
+The project emphasizes **correctness, controlled experimentation, and explainable performance gains**.
 
 ---
 
 ## Execution Guide (What to run, where, and why)
 
-> All commands are run from the **Apache_TVM/** root unless stated otherwise.
+> All commands are run from the **Apache_TVM/** project root unless stated otherwise.
 
 ---
 
-### Phase 0 — Environment Validation
+## View Collected Results
+
+```bash
+python3 -m research.analysis.print_qkv_results
+```
+
+**Why:**  
+Prints a consolidated table of all recorded QKV MatMul results, including:
+- baseline
+- all manual schedules
+- MetaSchedule best result
+
+This is the **primary comparison artifact** for Phase 4.3.
+
+---
+
+## Phase 0 — Environment Validation
 
 ```bash
 source venv/bin/activate
 python3 research/workloads/common/env_check.py
 ```
-**Why:** Verify that TVM, LLVM, and Python bindings are correctly set up.
 
 ---
 
-### Phase 1 — Load Transformer Model
+## Phase 1 — Load Transformer Model
 
 ```bash
 python3 research/workloads/bert/load_bert.py
 ```
-**Why:** Downloads and loads BERT for static graph inspection (no training).
 
 ---
 
-### Phase 2 — Extract MatMul Shapes from BERT
+## Phase 2 — Extract MatMul Shapes from BERT
 
 ```bash
 python3 research/workloads/bert/extract_matmul_shapes.py
 ```
-**Why:** Extracts *all* MatMul shapes used internally by BERT.
-
-Output:
-```
-bert_matmul_shapes_raw.json
-```
-
----
 
 ```bash
 python3 research/workloads/bert/filter_qkv.py
 ```
-**Why:** Filters only **Q/K/V projection MatMuls**  
-(shape: `[*, 768] x [768, 768]`).
-
-Output:
-```
-bert_matmul_shapes_qkv.json
-```
 
 ---
 
-### Phase 3 — Canonical TIR Kernel Construction
+## Phase 3 — Canonical TIR Kernel Construction
 
 ```bash
 python3 -m research.workloads.bert.matmul.qkv_matmul
 ```
-**Why:** Generates the **baseline canonical TIR MatMul kernel** for BERT QKV.
 
 ---
 
-### Phase 3.1 — Baseline Performance
+## Phase 3.1 — Baseline Performance
 
 ```bash
 python3 -m research.workloads.bert.matmul.qkv_run baseline
 ```
-**Why:** Measures unscheduled baseline performance.
 
 ---
 
-### Phase 3.2 — Reduction Axis Splitting
+## Phase 3.2 — Reduction Axis Splitting
 
 ```bash
 python3 -m research.workloads.bert.matmul.qkv_run k16
 python3 -m research.workloads.bert.matmul.qkv_run k32
 python3 -m research.workloads.bert.matmul.qkv_run k64
 ```
-**Why:** Studies impact of **K-axis tiling** on cache and performance.
 
 ---
 
-### Phase 3.3 — Parallelism & Vectorization
+## Phase 3.3 — Parallelism & Vectorization
 
 ```bash
 python3 -m research.workloads.bert.matmul.qkv_run parallel
@@ -98,30 +103,50 @@ python3 -m research.workloads.bert.matmul.qkv_run parallel_vec_j
 python3 -m research.workloads.bert.matmul.qkv_run vec_j_k16
 python3 -m research.workloads.bert.matmul.qkv_run full
 ```
-**Why:** Evaluates **composite schedules** combining:
-- parallelism
-- reduction splitting
-- vectorization
-
-Used to identify best-performing manual schedules.
 
 ---
 
-### Additional Canonical Kernels (MLP Layers)
+## Phase 4 — Automated Scheduling with MetaSchedule
+
+### Phase 4.1 — MetaSchedule Tuning
+
+```bash
+python3 -m research.workloads.bert.metaschedule.qkv_metaschedule_tune
+```
+
+---
+
+### Phase 4.2 — Result Extraction
+
+Results are recorded directly from tuning logs into:
+
+```
+research/results/bert_qkv_results.json
+```
+
+---
+
+### Phase 4.3 — Comparative Analysis
+
+Manual vs MetaSchedule performance comparison completed.
+
+---
+
+## Additional Canonical Kernels (MLP Layers)
 
 ```bash
 python3 research/workloads/bert/matmul/mlp_expanded_matmul.py
 python3 research/workloads/bert/matmul/mlp_compressed_matmul.py
 ```
-**Why:** Generates canonical MatMul kernels for **Transformer MLP layers**  
-(used in later optimization phases).
 
 ---
 
 ## Current Status
-- ✔ TVM correctness validated  
+
+- ✔ Environment validated  
 - ✔ BERT MatMul shapes extracted  
 - ✔ Canonical kernels created  
-- ✔ Manual scheduling strategies benchmarked  
+- ✔ Manual schedules benchmarked  
+- ✔ MetaSchedule comparison completed  
 
-Next step: **Phase 4 — Automated scheduling / MetaSchedule**
+**Next step:** Phase 5 — Generalization to additional Transformer workloads
