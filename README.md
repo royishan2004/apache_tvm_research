@@ -22,18 +22,36 @@ The project emphasizes **correctness, controlled experimentation, and explainabl
 
 ---
 
-## View Collected Results
+## View Collected Results (Print)
 
 ```bash
-python3 -m research.analysis.print_qkv_mlp_results          # all kernels
-python3 -m research.analysis.print_qkv_mlp_results qkv      # QKV only
+python3 -m research.analysis.print_qkv_mlp_results              # all kernels
+python3 -m research.analysis.print_qkv_mlp_results qkv          # QKV only
 python3 -m research.analysis.print_qkv_mlp_results mlp_expand
 python3 -m research.analysis.print_qkv_mlp_results mlp_reduce
 ```
 
 **Why:**  
-Prints a consolidated table (pivot) of recorded MatMul results per kernel. Use the optional kernel
-argument to limit output to `qkv`, `mlp_expand` or `mlp_reduce`.
+Prints a consolidated pivot table of recorded MatMul latencies (µs) per kernel, grouped by
+variant and M value. Shows shape info (HIDDEN, FF, K, N) and M-sweep config.  
+At the end it prompts `Show plots? [y/N]` — answering **y** launches the plotting script below.
+
+---
+
+## View Collected Results (Plot)
+
+```bash
+python3 -m research.analysis.plot_qkv_mlp_results               # all kernels (interactive)
+python3 -m research.analysis.plot_qkv_mlp_results qkv           # single kernel
+python3 -m research.analysis.plot_qkv_mlp_results --save        # save PNGs (headless-safe)
+python3 -m research.analysis.plot_qkv_mlp_results qkv --save    # single kernel, save PNG
+```
+
+**Why:**  
+Generates one **line chart per kernel** (variant lines vs M, Y = latency µs) plus a
+**consolidated heatmap** of all kernels on a single figure. Use `--save` to write PNGs to
+`research/results/plots/` instead of opening interactive windows (required for headless / no
+DISPLAY environments).
 
 ---
 

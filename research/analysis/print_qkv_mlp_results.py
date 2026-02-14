@@ -7,6 +7,7 @@ from research.workloads.bert.bert_shapes import (
     HIDDEN, FF, M_LIST,
     qkv_shape, mlp_expanded_shape, mlp_compressed_shape,
 )
+import subprocess
 
 RESULTS_FILE = Path("research/results/bert_matmul_results.json")
 
@@ -72,3 +73,18 @@ for kernel_name, group in df.groupby("kernel", sort=False):
     print(tabulate(pivot, headers="keys", tablefmt="grid",
                    showindex=False, floatfmt=".2f"))
     print()
+
+# Prompt user whether to display plots
+try:
+    ans = input("Show plots for these results now? [y/N]: ").strip().lower()
+except (EOFError, KeyboardInterrupt):
+    ans = "n"
+
+if ans in ("y", "yes"):
+    print("Launching plot viewer...")
+    try:
+        subprocess.run([sys.executable, "-m", "research.analysis.plot_qkv_mlp_results"], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Plot script failed: {e}")
+else:
+    print("Skipping plots.")
