@@ -8,7 +8,7 @@ import time
 # --------------------------------------------------
 
 LOG_DIR = "research/results/metaschedule/qkv/logs"
-RESULTS_FILE = "research/results/bert_qkv_results.json"
+RESULTS_FILE = "research/results/bert_matmul_results.json"
 
 # --------------------------------------------------
 # Regex to capture latency values
@@ -33,18 +33,9 @@ best_latency = min(latencies)
 
 print(f"✔ Best MetaSchedule latency found: {best_latency:.3f} us")
 
-entry = {
-    "variant": "metaschedule",
-    "B": 128,
-    "M": 768,
-    "N": 768,
-    "latency_us": best_latency,
-    "runs": "MetaSchedule",
-    "target": "llvm",
-    "source": "MetaSchedule-log",
-    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-}
+from research.workloads.bert.bert_shapes import qkv_shape, M_LIST
 
+# ─── build one entry per M value in the sweep list ─────────────────
 results = []
 if os.path.exists(RESULTS_FILE):
     with open(RESULTS_FILE, "r") as f:
@@ -53,9 +44,22 @@ if os.path.exists(RESULTS_FILE):
 # Remove old metaschedule entries (avoid duplicates)
 results = [r for r in results if r.get("variant") != "metaschedule"]
 
-results.append(entry)
+for M_val in M_LIST:
+    M, K, N = qkv_shape(M_val)
+    results.append({
+        "kernel": "qkv",
+        "variant": "metaschedule",
+        "M": M,
+        "K": K,
+        "N": N,
+        "latency_us": best_latency,
+        "runs": "MetaSchedule",
+        "target": "llvm",
+        "source": "MetaSchedule-log",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
 
 with open(RESULTS_FILE, "w") as f:
     json.dump(results, f, indent=2)
 
-print("✔ MetaSchedule result appended to", RESULTS_FILE)
+print(f"✔ MetaSchedule results ({len(M_LIST)} M values) saved to", RESULTS_FILE)

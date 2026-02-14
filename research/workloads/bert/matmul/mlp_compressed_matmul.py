@@ -1,8 +1,9 @@
 from research.workloads.common.matmul_templates import matmul_tir
-from research.workloads.bert.bert_shapes import mlp_compressed_shape
+from research.workloads.bert.bert_shapes import mlp_compressed_shape, M_LIST
 
-# Shape derived from BERT extraction (Phase 2)
-M, K, N = mlp_compressed_shape()
+# Use first M from sweep list for a concrete module
+# (the runner benchmarks across all M values)
+M, K, N = mlp_compressed_shape(M_LIST[0])
 
 mod = matmul_tir(M, K, N)
 

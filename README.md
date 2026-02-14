@@ -25,16 +25,15 @@ The project emphasizes **correctness, controlled experimentation, and explainabl
 ## View Collected Results
 
 ```bash
-python3 -m research.analysis.print_qkv_results
+python3 -m research.analysis.print_qkv_mlp_results          # all kernels
+python3 -m research.analysis.print_qkv_mlp_results qkv      # QKV only
+python3 -m research.analysis.print_qkv_mlp_results mlp_expand
+python3 -m research.analysis.print_qkv_mlp_results mlp_reduce
 ```
 
 **Why:**  
-Prints a consolidated table of all recorded QKV MatMul results, including:
-- baseline
-- all manual schedules
-- MetaSchedule best result
-
-This is the **primary comparison artifact** for Phase 4.3.
+Prints a consolidated table (pivot) of recorded MatMul results per kernel. Use the optional kernel
+argument to limit output to `qkv`, `mlp_expand` or `mlp_reduce`.
 
 ---
 
@@ -61,9 +60,8 @@ python3 research/workloads/bert/load_bert.py
 python3 research/workloads/bert/extract_matmul_shapes.py
 ```
 
-```bash
-python3 research/workloads/bert/filter_qkv.py
-```
+Note: `filter_qkv.py` is deprecated; `extract_matmul_shapes.py` now writes labelled shapes
+directly to `research/workloads/bert/bert_matmul_shapes.json`.
 
 ---
 
@@ -78,7 +76,9 @@ python3 -m research.workloads.bert.matmul.qkv_matmul
 ## Phase 3.1 — Baseline Performance
 
 ```bash
-python3 -m research.workloads.bert.matmul.qkv_run baseline
+python3 -m research.workloads.bert.matmul.qkv_mlp_run baseline --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run baseline --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run baseline --kernel mlp_reduce
 ```
 
 ---
@@ -86,9 +86,20 @@ python3 -m research.workloads.bert.matmul.qkv_run baseline
 ## Phase 3.2 — Reduction Axis Splitting
 
 ```bash
-python3 -m research.workloads.bert.matmul.qkv_run k16
-python3 -m research.workloads.bert.matmul.qkv_run k32
-python3 -m research.workloads.bert.matmul.qkv_run k64
+# k16
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k16 --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k16 --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k16 --kernel mlp_reduce
+
+# k32
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k32 --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k32 --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k32 --kernel mlp_reduce
+
+# k64
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k64 --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k64 --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k64 --kernel mlp_reduce
 ```
 
 ---
@@ -96,12 +107,35 @@ python3 -m research.workloads.bert.matmul.qkv_run k64
 ## Phase 3.3 — Parallelism & Vectorization
 
 ```bash
-python3 -m research.workloads.bert.matmul.qkv_run parallel
-python3 -m research.workloads.bert.matmul.qkv_run vec_j
-python3 -m research.workloads.bert.matmul.qkv_run parallel_k16
-python3 -m research.workloads.bert.matmul.qkv_run parallel_vec_j
-python3 -m research.workloads.bert.matmul.qkv_run vec_j_k16
-python3 -m research.workloads.bert.matmul.qkv_run full
+# parallel
+python3 -m research.workloads.bert.matmul.qkv_mlp_run parallel --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run parallel --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run parallel --kernel mlp_reduce
+
+# vec_j
+python3 -m research.workloads.bert.matmul.qkv_mlp_run vec_j --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run vec_j --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run vec_j --kernel mlp_reduce
+
+# parallel_k16
+python3 -m research.workloads.bert.matmul.qkv_mlp_run parallel_k16 --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run parallel_k16 --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run parallel_k16 --kernel mlp_reduce
+
+# parallel_vec_j
+python3 -m research.workloads.bert.matmul.qkv_mlp_run parallel_vec_j --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run parallel_vec_j --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run parallel_vec_j --kernel mlp_reduce
+
+# vec_j_k16
+python3 -m research.workloads.bert.matmul.qkv_mlp_run vec_j_k16 --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run vec_j_k16 --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run vec_j_k16 --kernel mlp_reduce
+
+# full
+python3 -m research.workloads.bert.matmul.qkv_mlp_run full --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run full --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run full --kernel mlp_reduce
 ```
 
 ---
@@ -118,10 +152,10 @@ python3 -m research.workloads.bert.metaschedule.qkv_metaschedule_tune
 
 ### Phase 4.2 — Result Extraction
 
-Results are recorded directly from tuning logs into:
+Results are recorded directly from tuning logs into the unified results file:
 
 ```
-research/results/bert_qkv_results.json
+research/results/bert_matmul_results.json
 ```
 
 ---
