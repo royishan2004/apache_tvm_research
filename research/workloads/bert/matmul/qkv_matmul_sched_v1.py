@@ -3,13 +3,13 @@
 import tvm
 from tvm.script import tir as T
 from research.workloads.common.matmul_templates import matmul_tir
+from research.workloads.bert.bert_shapes import qkv_shape
 
-# BERT QKV dimensions
-B = 128
-H = 768
+# BERT QKV dimensions from extraction
+M, K, N = qkv_shape()
 
 # 1. Get baseline module
-mod = matmul_tir(B, H, H)
+mod = matmul_tir(M, K, N)
 
 # 2. Create schedule
 sch = tvm.tir.Schedule(mod)

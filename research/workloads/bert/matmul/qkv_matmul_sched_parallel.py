@@ -1,14 +1,14 @@
 import tvm
 from research.workloads.common.matmul_templates import matmul_tir
+from research.workloads.bert.bert_shapes import qkv_shape
 
-# QKV MatMul dimensions
-B = 128   # sequence length
-H = 768   # hidden size
+# QKV MatMul dimensions from BERT extraction
+M, K, N = qkv_shape()
 
 # --------------------------------------------------
 # 1. Create canonical MatMul
 # --------------------------------------------------
-mod = matmul_tir(B, H, H)
+mod = matmul_tir(M, K, N)
 sch = tvm.tir.Schedule(mod)
 sch.work_on("main")
 

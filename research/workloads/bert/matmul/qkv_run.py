@@ -6,6 +6,10 @@ import numpy as np
 import tvm
 from tvm.runtime import device
 
+from research.workloads.bert.bert_shapes import (
+    HIDDEN, DEFAULT_M, qkv_shape, print_config,
+)
+
 VARIANTS = {
     "baseline": "baseline",
 
@@ -26,26 +30,34 @@ VARIANTS = {
     "full": "research.workloads.bert.matmul.qkv_matmul_sched_full",
 }
 
-if len(sys.argv) != 2 or sys.argv[1] not in VARIANTS:
+if len(sys.argv) < 2 or sys.argv[1] not in VARIANTS:
     print("Usage:")
-    print("  python3 -m research.workloads.bert.matmul.qkv_run <variant>")
+    print("  python3 -m research.workloads.bert.matmul.qkv_run <variant> [--batch M]")
     print("\nAvailable variants:")
     for k in VARIANTS:
         print(" ", k)
+    print(f"\n  --batch M   override batch dimension (default: {DEFAULT_M})")
     sys.exit(1)
 
 variant = sys.argv[1]
-print(f"Running variant: {variant}")
 
+# Optional --batch override
+BATCH = DEFAULT_M
+if "--batch" in sys.argv:
+    idx = sys.argv.index("--batch")
+    BATCH = int(sys.argv[idx + 1])
 
-BATCH = 128
-HIDDEN = 768
+M, K, N = qkv_shape(BATCH)
 TARGET = "llvm"
+
+print(f"Running variant: {variant}")
+print_config(BATCH)
+print()
 
 
 if variant == "baseline":
     from research.workloads.common.matmul_templates import matmul_tir
-    mod = matmul_tir(BATCH, HIDDEN, HIDDEN)
+    mod = matmul_tir(M, K, N)
 else:
     module_path = VARIANTS[variant]
     sched_mod = __import__(module_path, fromlist=["sch"])
@@ -58,9 +70,9 @@ rt_mod = tvm.build(mod, target=TARGET)
 
 dev = device("cpu", 0)
 
-A_np = np.random.rand(BATCH, HIDDEN).astype("float32")
-B_np = np.random.rand(HIDDEN, HIDDEN).astype("float32")
-C_np = np.zeros((BATCH, HIDDEN), dtype="float32")
+A_np = np.random.rand(M, K).astype("float32")
+B_np = np.random.rand(K, N).astype("float32")
+C_np = np.zeros((M, N), dtype="float32")
 
 A = tvm.nd.array(A_np, dev)
 B_mat = tvm.nd.array(B_np, dev)
@@ -91,9 +103,9 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 result_entry = {
     "variant": variant,
-    "B": BATCH,
-    "M": HIDDEN,
-    "N": HIDDEN,
+    "M": M,
+    "K": K,
+    "N": N,
     "latency_us": float(latency_us),
     "runs": n,
     "target": TARGET,

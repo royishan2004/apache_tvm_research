@@ -1,13 +1,13 @@
 import tvm
 from research.workloads.common.matmul_templates import matmul_tir
+from research.workloads.bert.bert_shapes import qkv_shape
 
-B = 128
-H = 768
+M, K, N = qkv_shape()
 
 # --------------------------------------------------
 # 1. Canonical MatMul
 # --------------------------------------------------
-mod = matmul_tir(B, H, H)
+mod = matmul_tir(M, K, N)
 sch = tvm.tir.Schedule(mod)
 sch.work_on("main")
 
