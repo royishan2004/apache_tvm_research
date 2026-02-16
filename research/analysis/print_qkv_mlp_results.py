@@ -8,6 +8,7 @@ from research.workloads.bert.bert_shapes import (
     qkv_shape, mlp_expanded_shape, mlp_compressed_shape,
 )
 import subprocess
+import signal
 
 RESULTS_FILE = Path("research/results/bert_matmul_results.json")
 
@@ -27,8 +28,8 @@ if not data:
 
 df = pd.DataFrame(data)
 
-if "kernel" not in df.columns:
-    df["kernel"] = "qkv"
+# if "kernel" not in df.columns:
+#   df["kernel"] = "qkv"
 
 pd.set_option("display.max_rows", None)
 pd.set_option("display.max_columns", None)
@@ -74,11 +75,22 @@ for kernel_name, group in df.groupby("kernel", sort=False):
                    showindex=False, floatfmt=".2f"))
     print()
 
-# Prompt user whether to display plots
-try:
-    ans = input("Show plots for these results now? [y/N]: ").strip().lower()
-except (EOFError, KeyboardInterrupt):
-    ans = "n"
+# Prompt user whether to display plots (timeout after 30s)
+def _input_timeout(seconds=30):
+    def _handler(signum, frame):
+        raise TimeoutError
+    old_handler = signal.getsignal(signal.SIGALRM)
+    signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(seconds)
+    try:
+        return input("Show plots for these results now? [y/N]: ").strip().lower()
+    except (EOFError, KeyboardInterrupt, TimeoutError):
+        return "n"
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, old_handler)
+
+ans = _input_timeout(30)
 
 if ans in ("y", "yes"):
     print("Launching plot viewer...")

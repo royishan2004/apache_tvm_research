@@ -163,7 +163,9 @@ python3 -m research.workloads.bert.matmul.qkv_mlp_run full --kernel mlp_reduce
 ### Phase 4.1 — MetaSchedule Tuning
 
 ```bash
-python3 -m research.workloads.bert.metaschedule.qkv_metaschedule_tune
+python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel qkv
+python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel mlp_expand
+python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel mlp_reduce
 ```
 
 ---
