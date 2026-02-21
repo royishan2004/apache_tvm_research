@@ -1,7 +1,7 @@
 import sys
-import time
 import json
 import os
+import time
 import numpy as np
 import tvm
 from tvm.runtime import device
@@ -24,21 +24,32 @@ KERNELS = {
 
 VARIANT_LIST = available_variants()
 
+TARGET = "llvm"
+DEV = tvm.cpu(0)
+
+EVAL_NUMBER = 50
+EVAL_REPEAT = 3
+EVAL_MIN_MS = 50
+
+ALL_TAG = "--all"
+
 def _parse_args():
-    if len(sys.argv) < 2 or sys.argv[1] not in VARIANT_LIST:
+    valid_choices = VARIANT_LIST + [ALL_TAG]
+    if len(sys.argv) < 2 or sys.argv[1] not in valid_choices:
         print("Usage:")
         print("  python3 -m research.workloads.bert.matmul.qkv_mlp_run <variant> [--kernel K]")
         print("\nAvailable variants:")
         for v in VARIANT_LIST:
             print(f"  {v}")
+        print(f"  {ALL_TAG}   (run every variant × every kernel)")
         print(f"\nOptions:")
         print(f"  --kernel K   one of: {', '.join(KERNELS)}  (default: qkv)")
+        print(f"               ignored when variant is '{ALL_TAG}'")
         print(f"\nEvery run sweeps M_LIST = {M_LIST}")
         sys.exit(1)
 
     variant = sys.argv[1]
 
-    # --kernel
     kernel = "qkv"
     if "--kernel" in sys.argv:
         idx = sys.argv.index("--kernel")
@@ -50,13 +61,20 @@ def _parse_args():
     return variant, kernel
 
 variant, kernel = _parse_args()
-shape_fn = KERNELS[kernel]
-m_values = M_LIST
-TARGET = "llvm"
 
-print(f"Kernel : {kernel}")
-print(f"Variant: {variant}")
-print(f"M sweep: {m_values}")
+if variant == ALL_TAG:
+    run_plan = [
+        (k, v) for k in KERNELS for v in VARIANT_LIST if v != "vec_k" and v != "rule_based" #Expected failure case
+    ]
+    print(f"Mode   : {ALL_TAG}")
+    print(f"Kernels: {', '.join(KERNELS)}")
+    print(f"Variants per kernel: {len(VARIANT_LIST)}")
+else:
+    run_plan = [(kernel, variant)]
+    print(f"Kernel : {kernel}")
+    print(f"Variant: {variant}")
+
+print(f"M sweep: {M_LIST}")
 print_config()
 print()
 
@@ -74,51 +92,64 @@ if os.path.exists(RESULTS_FILE):
     except json.JSONDecodeError:
         print("⚠️  Corrupted results file — starting fresh")
 
-for M_val in m_values:
-    M, K, N = shape_fn(M_val)
-    base_mod = matmul_tir(M, K, N)
-    scheduled_mod = apply_schedule(base_mod, variant)
+total_combos = len(run_plan)
+for combo_idx, (cur_kernel, cur_variant) in enumerate(run_plan, 1):
+    cur_shape_fn = KERNELS[cur_kernel]
+    if total_combos > 1:
+        print(f"=== [{combo_idx}/{total_combos}] kernel={cur_kernel}  variant={cur_variant} ===")
 
-    rt_mod = tvm.build(scheduled_mod, target=TARGET)
-    dev = device("cpu", 0)
+    for M_val in M_LIST:
+        M, K, N = cur_shape_fn(M_val)
+        base_mod = matmul_tir(M, K, N)
+        scheduled_mod = apply_schedule(
+            base_mod, cur_variant, M=M, K=K, N=N, kernel=cur_kernel
+        )
 
-    A_np = np.random.rand(M, K).astype("float32")
-    B_np = np.random.rand(K, N).astype("float32")
-    C_np = np.zeros((M, N), dtype="float32")
+        rt_mod = tvm.build(scheduled_mod, target=TARGET)
 
-    A = tvm.nd.array(A_np, dev)
-    B_mat = tvm.nd.array(B_np, dev)
-    C = tvm.nd.array(C_np, dev)
+        # Allocate inputs
+        A_np = np.random.randn(M, K).astype("float32")
+        B_np = np.random.randn(K, N).astype("float32")
+        C_np = np.zeros((M, N), dtype="float32")
 
-    f = rt_mod["main"]
+        A = tvm.nd.array(A_np, DEV)
+        B_mat = tvm.nd.array(B_np, DEV)
+        C = tvm.nd.array(C_np, DEV)
 
-    # Warm-up
-    for _ in range(5):
-        f(A, B_mat, C)
+        evaluator = rt_mod.time_evaluator(
+            "main",
+            dev=DEV,
+            number=EVAL_NUMBER,
+            repeat=EVAL_REPEAT,
+            min_repeat_ms=EVAL_MIN_MS,
+        )
 
-    # Timed runs
-    n = 10
-    start = time.time()
-    for _ in range(n):
-        f(A, B_mat, C)
-    end = time.time()
+        result = evaluator(A, B_mat, C)
 
-    latency_us = (end - start) * 1e6 / n
-    print(f"  M={M:4d}  K={K:4d}  N={N:4d}  latency = {latency_us:.3f} us")
+        mean_us = result.mean * 1e6
+        std_us = result.std * 1e6
 
-    results.append({
-        "kernel":     kernel,
-        "variant":    variant,
-        "M": M,
-        "K": K,
-        "N": N,
-        "latency_us": float(latency_us),
-        "runs":       n,
-        "target":     TARGET,
-        "timestamp":  time.strftime("%Y-%m-%d %H:%M:%S"),
-    })
+        print(
+            f"  M={M:4d}  K={K:4d}  N={N:4d}  "
+            f"latency = {mean_us:.4f} µs  (± {std_us:.4f} µs)"
+        )
 
-with open(RESULTS_FILE, "w") as f_out:
-    json.dump(results, f_out, indent=2)
+        results.append({
+            "kernel":     cur_kernel,
+            "variant":    cur_variant,
+            "M": M,
+            "K": K,
+            "N": N,
+            "latency_us": float(mean_us),
+            "std_us":     float(std_us),
+            "number":     EVAL_NUMBER,
+            "repeat":     EVAL_REPEAT,
+            "min_repeat_ms": EVAL_MIN_MS,
+            "target":     TARGET,
+            "timestamp":  time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+    with open(RESULTS_FILE, "w") as f_out:
+        json.dump(results, f_out, indent=2)
 
 print(f"\nResults saved to {RESULTS_FILE}")

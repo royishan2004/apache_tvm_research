@@ -1,5 +1,10 @@
 import tvm
 
+from research.workloads.common.rule_based_schedule import (
+    apply_rule_based_schedule,
+)
+
+
 def _sched_k16(mod):
     sch = tvm.tir.Schedule(mod)
     sch.work_on("main")
@@ -130,7 +135,7 @@ RECIPES = {
 }
 
 
-def apply_schedule(mod, variant: str):
+def apply_schedule(mod, variant: str, **kwargs):
     """Apply a named schedule recipe to a MatMul TIR module.
 
     Parameters
@@ -138,7 +143,11 @@ def apply_schedule(mod, variant: str):
     mod : tvm.ir.IRModule
         TIR module from matmul_tir(M, K, N).
     variant : str
-        One of RECIPES.keys() or "baseline".
+        One of RECIPES.keys(), "baseline", or "rule_based".
+    **kwargs
+        Extra arguments forwarded to variant-specific schedulers.
+        ``rule_based`` requires ``M``, ``K``, ``N`` (int) and
+        optionally ``kernel`` (str, default ``"qkv"``).
 
     Returns
     -------
@@ -147,10 +156,22 @@ def apply_schedule(mod, variant: str):
     """
     if variant == "baseline":
         return mod
+
+    if variant == "rule_based":
+        M = kwargs.get("M")
+        K = kwargs.get("K")
+        N = kwargs.get("N")
+        kernel = kwargs.get("kernel", "qkv")
+        if M is None or K is None or N is None:
+            raise ValueError(
+                "rule_based variant requires M=, K=, N= keyword arguments"
+            )
+        return apply_rule_based_schedule(mod, M, K, N, kernel)
+
     if variant not in RECIPES:
         raise ValueError(
             f"Unknown variant '{variant}'. "
-            f"Available: baseline, {', '.join(sorted(RECIPES))}"
+            f"Available: {', '.join(available_variants())}"
         )
     sch = RECIPES[variant](mod)
     return sch.mod
@@ -158,4 +179,4 @@ def apply_schedule(mod, variant: str):
 
 def available_variants():
     """Return sorted list of all variant names including baseline."""
-    return ["baseline"] + sorted(RECIPES.keys())
+    return ["baseline", "rule_based"] + sorted(RECIPES.keys())
