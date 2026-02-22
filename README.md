@@ -441,54 +441,112 @@ performance** while satisfying all three properties.
 ## Execution Guide (What to run, where, and why)
 > All commands are run from the **Apache_TVM/** project root unless stated otherwise.
 ```mermaid
+%%{init: {'theme': 'dark'}}%%
 flowchart TB
- subgraph SHAPES_AND_TEMPLATES["Shape Definitions & MatMul Template"]
-        E["matmul_templates.py → matmul_tir(M, K, N)<br>Build canonical TIR MatMul IRModule"]
-        D["bert_shapes.py<br>Expose qkv_shape, mlp_expanded_shape,<br>mlp_compressed_shape, M_LIST"]
-  end
-    A["env_check.py <br> Verify Python / PyTorch / Transformers"] -- tvm_initialisation_checks --> B["L0_canonical_verification.py<br>Verify TVM import, tvm.build, NDArray, LLVM"]
-    A -- schedule_analysis --> C["extract_matmul_shapes.py<br>Load pretrained BERT model<br>Inspect weight tensors<br>Write shapes to JSON"]
-    D --> E
-    H["schedule_recipes.py → apply_schedule()<br>Select variant: baseline / K-tiling / parallelisation / vectorisation / full / rule_based"] -- rule_based --> H1["rule_based_schedule.py<br>apply_rule_based_schedule()<br>Auto-pick TM, TN, TK tiles<br>Split → Reorder → Fuse →<br>Parallelize → Vectorize → Unroll"]
-    G{"Choose scheduling<br>strategy"} -- AutoTune<br>(MetaSchedule) --> I["metaschedule_tune.py<br>ms.tir_integration.tune_tir()<br>Per kernel × per M<br>Store logs → research/results/metaschedule/"]
-    L["research/results/bert_matmul_results.json<br>All variant × kernel × M latencies"] --> M["print_qkv_mlp_results.py<br>Load JSON → Tabulate by variant &amp; M<br>Print summary"] & N["plot_qkv_mlp_results.py<br>Line plots + Heatmap<br>Optionally --save to file"]
-    B --> T1["L1_vector_add.py<br>TIR vector add → build → verify vs NumPy"]
-    T1 --> T2["L2_schedule_semantics.py<br>Schedule transforms → verify correctness"]
-    T2 --> T3["L3_metaschedule.py<br>MetaSchedule smoke test"]
-    T3 --> T4["L4_performance_and_ir.py<br>Performance measurement + IR dump"]
-    T4 --> T5["L5_large_matmul.py<br>Large MatMul stress test + perf check"]
-    M --> N
-    I1["metaschedule_log_parse.py<br>Parse tuning logs<br>Extract best latency"] --> L
-    H1 --> L
-    H2["Named manual recipe<br>Apply predefined schedule transforms"] --> L
-    H -- "baseline / K-tiling / parallelisation / vectorisation / full" --> H2
-    G -- "Manual / Rule-based" --> K@{ label: "qkv_mlp_run.py <br/>For each M in M_LIST:<br/>  • Create NDArrays (A, B, C)<br/>  • Warm-up runs<br/>  • Time rt_mod['main'] executions<br/>  • Append measurements" }
-    C --> G
-    I --> D & I1
-    E --> I & K
-    K --> D & H
 
-    K@{ shape: rect}
-    style D fill:#fff3e0,stroke:#e65100
-    style E fill:#f3e5f5,stroke:#6a1b9a
-    style A fill:#e3f2fd,stroke:#1565c0
-    style B fill:#e3f2fd,stroke:#1565c0
-    style C fill:#fff3e0,stroke:#e65100
-    style H fill:#e8f5e9,stroke:#2e7d32
-    style H1 fill:#e8f5e9,stroke:#2e7d32
-    style G fill:#fffde7,stroke:#f57f17
-    style I fill:#fce4ec,stroke:#c62828
-    style L fill:#f1f8e9,stroke:#558b2f
-    style M fill:#ede7f6,stroke:#4527a0
-    style N fill:#ede7f6,stroke:#4527a0
-    style T1 fill:#eceff1,stroke:#546e7a
-    style T2 fill:#eceff1,stroke:#546e7a
-    style T3 fill:#eceff1,stroke:#546e7a
-    style T4 fill:#eceff1,stroke:#546e7a
-    style T5 fill:#eceff1,stroke:#546e7a
-    style I1 fill:#fce4ec,stroke:#c62828
-    style H2 fill:#e8f5e9,stroke:#2e7d32
-    style K fill:#e0f7fa,stroke:#00838f
+subgraph SHAPES_AND_TEMPLATES["Shape Definitions & MatMul Template"]
+    E["matmul_templates.py → matmul_tir(M, K, N)<br>Build canonical TIR MatMul IRModule"]
+    D["bert_shapes.py<br>Expose qkv_shape, mlp_expanded_shape,<br>mlp_compressed_shape, M_LIST"]
+end
+
+A["env_check.py <br> Verify Python / PyTorch / Transformers"]
+B["L0_canonical_verification.py<br>Verify TVM import, tvm.build, NDArray, LLVM"]
+C["extract_matmul_shapes.py<br>Load pretrained BERT model<br>Inspect weight tensors<br>Write shapes to JSON"]
+
+D --> E
+
+A -- tvm_initialisation_checks --> B
+A -- schedule_analysis --> C
+
+H["schedule_recipes.py → apply_schedule()<br>Select variant: baseline / K-tiling / parallelisation / vectorisation / full / rule_based"]
+H1["rule_based_schedule.py<br>apply_rule_based_schedule()<br>Auto-pick TM, TN, TK tiles<br>Split → Reorder → Fuse →<br>Parallelize → Vectorize → Unroll"]
+
+G{"Choose scheduling<br>strategy"}
+
+I["metaschedule_tune.py<br>ms.tir_integration.tune_tir()<br>Per kernel × per M<br>Store logs → research/results/metaschedule/"]
+
+L["research/results/bert_matmul_results.json<br>All variant × kernel × M latencies"]
+
+M["print_qkv_mlp_results.py<br>Load JSON → Tabulate by variant &amp; M<br>Print summary"]
+
+N["plot_qkv_mlp_results.py<br>Line plots + Heatmap<br>Optionally --save to file"]
+
+T1["L1_vector_add.py<br>TIR vector add → build → verify vs NumPy"]
+T2["L2_schedule_semantics.py<br>Schedule transforms → verify correctness"]
+T3["L3_metaschedule.py<br>MetaSchedule smoke test"]
+T4["L4_performance_and_ir.py<br>Performance measurement + IR dump"]
+T5["L5_large_matmul.py<br>Large MatMul stress test + perf check"]
+
+I1["metaschedule_log_parse.py<br>Parse tuning logs<br>Extract best latency"]
+
+H2["Named manual recipe<br>Apply predefined schedule transforms"]
+
+K["qkv_mlp_run.py<br>For each M in M_LIST:<br>• Create NDArrays (A, B, C)<br>• Warm-up runs<br>• Time rt_mod['main'] executions<br>• Append measurements"]
+
+B --> T1
+T1 --> T2
+T2 --> T3
+T3 --> T4
+T4 --> T5
+
+C --> G
+
+G -- AutoTune (MetaSchedule) --> I
+G -- Manual / Rule-based --> K
+
+H -- rule_based --> H1
+H -- baseline / K-tiling / parallelisation / vectorisation / full --> H2
+
+I --> D
+I --> I1
+
+E --> I
+E --> K
+
+K --> D
+K --> H
+
+H1 --> L
+H2 --> L
+I1 --> L
+
+L --> M
+M --> N
+
+
+%% ----------------------------
+%% DARK MODE SAFE STYLES
+%% ----------------------------
+
+style A fill:#1f2a44,stroke:#58a6ff,color:#ffffff,stroke-width:2px
+style B fill:#1f2a44,stroke:#58a6ff,color:#ffffff,stroke-width:2px
+
+style C fill:#3a2f1f,stroke:#ffb86c,color:#ffffff,stroke-width:2px
+style D fill:#3a2f1f,stroke:#ffb86c,color:#ffffff,stroke-width:2px
+
+style E fill:#2d1f3a,stroke:#d2a8ff,color:#ffffff,stroke-width:2px
+
+style H fill:#1f3a2a,stroke:#3fb950,color:#ffffff,stroke-width:2px
+style H1 fill:#1f3a2a,stroke:#3fb950,color:#ffffff,stroke-width:2px
+style H2 fill:#1f3a2a,stroke:#3fb950,color:#ffffff,stroke-width:2px
+
+style G fill:#3a371f,stroke:#f2cc60,color:#ffffff,stroke-width:2px
+
+style I fill:#3a1f2a,stroke:#ff7b72,color:#ffffff,stroke-width:2px
+style I1 fill:#3a1f2a,stroke:#ff7b72,color:#ffffff,stroke-width:2px
+
+style L fill:#243a1f,stroke:#7ee787,color:#ffffff,stroke-width:2px
+
+style M fill:#2a1f3a,stroke:#a5a5ff,color:#ffffff,stroke-width:2px
+style N fill:#2a1f3a,stroke:#a5a5ff,color:#ffffff,stroke-width:2px
+
+style T1 fill:#2a2a2a,stroke:#8b949e,color:#ffffff,stroke-width:2px
+style T2 fill:#2a2a2a,stroke:#8b949e,color:#ffffff,stroke-width:2px
+style T3 fill:#2a2a2a,stroke:#8b949e,color:#ffffff,stroke-width:2px
+style T4 fill:#2a2a2a,stroke:#8b949e,color:#ffffff,stroke-width:2px
+style T5 fill:#2a2a2a,stroke:#8b949e,color:#ffffff,stroke-width:2px
+
+style K fill:#1f3a3a,stroke:#56d4dd,color:#ffffff,stroke-width:2px
 ```
 
 ---
