@@ -79,13 +79,14 @@ transforms applied to the canonical `matmul_tir(M, K, N)` kernel:
 | Variant           | Transforms applied                                   |
 |:------------------|:-----------------------------------------------------|
 | `baseline`        | None — triple-nested loop as written                 |
-| `k16` / `k32` / `k64` | `split(k, TK)` + `reorder`                     |
-| `parallel`        | `parallel(i)`                                        |
-| `vec_j`           | `split(j, 8)` + `vectorize(j_inner)`                |
-| `parallel_k16`    | `parallel(i)` + `split(k, 16)` + `reorder`          |
-| `parallel_vec_j`  | `parallel(i)` + `split(j, 8)` + `vectorize`         |
-| `vec_j_k16`       | `split(j, 8)` + `vectorize` + `split(k, 16)` + `reorder` |
-| `full`            | `parallel(i)` + `split(j, 8)` + `vectorize` + `split(k, 16)` + `reorder` |
+| `k16` / `k32` / `k64` | `split(k, TK)` + `reorder(i, j, k0, k1)` + `vectorize(j)` |
+| `parallel`        | `parallel(i)` + `vectorize(j)`                       |
+| `vec_j`           | `vectorize(j)`                                       |
+| `vec_k`           | `split(k, 8)` + `vectorize(k1)` *(expected failure — reduction-axis vectorisation is illegal)* |
+| `parallel_k16`    | `split(k, 16)` + `reorder(i, j, k0, k1)` + `parallel(i)` + `unroll(k1)` |
+| `parallel_vec_j`  | `split(j, 8)` + `reorder(i, j0, j1, k)` + `parallel(i)` + `vectorize(j1)` |
+| `vec_j_k16`       | `split(j, 8)` + `split(k, 16)` + `reorder(i, j0, k0, j1, k1)` + `vectorize(j1)` + `unroll(k1)` |
+| `full`            | `split(j, 8)` + `split(k, 16)` + `reorder(i, j0, k0, j1, k1)` + `parallel(i)` + `vectorize(j1)` + `unroll(k1)` |
 
 Each variant is benchmarked across all 3 kernels × 8 M values = **24 shapes**.
 Latency is measured as the median of 50 runs after 5 warm-up executions.
