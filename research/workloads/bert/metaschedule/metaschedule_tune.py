@@ -1,8 +1,10 @@
 import os
 from tvm import meta_schedule as ms
 from tvm.target import Target
+from tvm.meta_schedule.tune_context import _normalize_mod
 
 from research.workloads.common.matmul_templates import matmul_tir
+from research.workloads.bert.metaschedule.metaschedule_best_schedules import save_best_schedule
 from research.workloads.bert.bert_shapes import (
     qkv_shape,
     mlp_expanded_shape,
@@ -104,7 +106,7 @@ for iteration in range(1, iterations + 1):
             print(f"\n{'=' * 120}")
             print(f"\nTuning kernel={kernel_name}  M={M}  K={K}  N={N}{iter_label}  -> work dir: {work_dir}")
             print(f"\n{'=' * 120}\n")
-            ms.tir_integration.tune_tir(
+            database = ms.tir_integration.tune_tir(
                 mod=mod,
                 target=TARGET,
                 work_dir=work_dir,
@@ -123,18 +125,24 @@ for iteration in range(1, iterations + 1):
 
             print(f"✔ Completed tuning for kernel={kernel_name} M={M}")
 
+            # Print the best schedule chosen by MetaSchedule
+            # Normalize mod the same way MetaSchedule does internally (adds tir.noalias)
+            # so the structural equality check in the database matches
+            normalized_mod = _normalize_mod(mod["main"])
+            best_record = database.query_tuning_record(normalized_mod, TARGET, "main")
+            if best_record is not None:
+                avg_latency = float(sum(best_record.run_secs)) / len(best_record.run_secs)
+                print(f"\n--- Best schedule for kernel={kernel_name} M={M} (latency={avg_latency * 1e6:.2f} µs) ---")
+                print(best_record.trace)
+                print(f"--- End of best schedule ---\n")
+                save_best_schedule(kernel_name, M, K, N, best_record)
+                print(f"✔ Best schedule saved to best_schedules.json")
+            else:
+                print(f"\n⚠ No tuning record found for kernel={kernel_name} M={M}\n")
+
     if iterations > 1:
         print(f"\n✔ Iteration {iteration}/{iterations} completed")
 
 print("\n✔ All MetaSchedule tuning runs completed successfully")
-
-import subprocess
-import sys
-
-print("\nRunning MetaSchedule log parser...")
-subprocess.check_call([
-    sys.executable,
-    "-m",
-    "research.workloads.bert.metaschedule.metaschedule_log_parse",
-])
-print("✔ MetaSchedule log parser completed successfully")
+print("\n✔ All MetaSchedule tuning runs completed successfully")
+print("✔ Best schedules and summary results written to research/results/metaschedule/best_schedules.json and research/results/bert_matmul_results.json")

@@ -66,7 +66,7 @@ for kernel_name, group in df.groupby("kernel", sort=False):
         index="variant",
         columns="M",
         values="latency_us",
-        aggfunc="min",       # keep best if duplicates
+        aggfunc="median",       # keep best if duplicates
     )
     pivot.columns = [f"M={int(c)}" for c in pivot.columns]
     pivot = pivot.reset_index()
