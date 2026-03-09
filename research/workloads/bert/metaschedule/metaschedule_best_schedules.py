@@ -103,12 +103,6 @@ def save_best_schedule(
                 except json.JSONDecodeError:
                     results = []
 
-        # remove old metaschedule entries for this kernel+M
-        results = [
-            r for r in results
-            if not (r.get("variant") == "metaschedule" and r.get("kernel") == kernel_name and r.get("M") == M)
-        ]
-
         results.append({
             "kernel": kernel_name,
             "variant": "metaschedule",
