@@ -693,7 +693,24 @@ python3 -m research.workloads.bert.matmul.qkv_mlp_run full --kernel mlp_reduce
 
 ## Phase 3.4 — All
 
+```bash
+# general syntax
+python3 -m research.workloads.bert.matmul.qkv_mlp_run \
+   <variant|--all-variants|--all> [--kernel <kernel>|--all-kernels] [--iterations <n>]
+
+# all variants across all kernels (alias: --all)
+python3 -m research.workloads.bert.matmul.qkv_mlp_run --all-variants
 python3 -m research.workloads.bert.matmul.qkv_mlp_run --all
+
+# all kernels for one selected variant
+python3 -m research.workloads.bert.matmul.qkv_mlp_run baseline --all-kernels
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k8 --all-kernels
+
+# repeat runs N times for stability / averaging studies
+python3 -m research.workloads.bert.matmul.qkv_mlp_run baseline --kernel qkv --iterations 3
+python3 -m research.workloads.bert.matmul.qkv_mlp_run full --all-kernels --iterations 5
+python3 -m research.workloads.bert.matmul.qkv_mlp_run --all-variants --iterations 2
+```
 
 ---
 
@@ -703,7 +720,7 @@ python3 -m research.workloads.bert.matmul.qkv_mlp_run --all
 
 ```bash
 #general_syntax
-python3 -m research.workloads.bert.metaschedule.metaschedule_tune --all | --kernel <kernel> |--iterations <n>
+python3 -m research.workloads.bert.metaschedule.metaschedule_tune [--all] [--kernel <kernel>] [--iterations <n>]
 
 python3 -m research.workloads.bert.metaschedule.metaschedule_tune --all --iterations 3
 python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel qkv
