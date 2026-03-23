@@ -54,7 +54,7 @@ The rule-based schedule is **not** based on theoretical models or
 GPU-oriented heuristics.  Every rule is derived from quantitative
 benchmarks collected on the target CPU across **four evidence sources**:
 
-1. **Single-transform manual schedules** (`baseline`, `k16`, `k32`, `k64`,
+1. **Single-transform manual schedules** (`baseline`, `k4`, `k8`, `k16`, `k32`, `k64`,
    `parallel`, `vec_j`, `parallel_k16`, `parallel_vec_j`, `vec_j_k16`,
    `full`) — isolate the gain from each optimisation and reveal
    cross-transform interactions.
@@ -79,7 +79,7 @@ transforms applied to the canonical `matmul_tir(M, K, N)` kernel:
 | Variant           | Transforms applied                                   |
 |:------------------|:-----------------------------------------------------|
 | `baseline`        | None — triple-nested loop as written                 |
-| `k16` / `k32` / `k64` | `split(k, TK)` + `reorder(i, j, k0, k1)` + `vectorize(j)` |
+| `k4` / `k8` / `k16` / `k32` / `k64` | `split(k, TK)` + `reorder(i, j, k0, k1)` + `vectorize(j)` |
 | `parallel`        | `parallel(i)` + `vectorize(j)`                       |
 | `vec_j`           | `vectorize(j)`                                       |
 | `vec_k`           | `split(k, 8)` + `vectorize(k1)` *(expected failure — reduction-axis vectorisation is illegal)* |
@@ -628,6 +628,16 @@ python3 -m research.workloads.bert.matmul.qkv_mlp_run baseline --kernel mlp_redu
 ## Phase 3.2 — Reduction Axis Splitting
 
 ```bash
+# k4
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k4 --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k4 --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k4 --kernel mlp_reduce
+
+# k8
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k8 --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k8 --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run k8 --kernel mlp_reduce
+
 # k16
 python3 -m research.workloads.bert.matmul.qkv_mlp_run k16 --kernel qkv
 python3 -m research.workloads.bert.matmul.qkv_mlp_run k16 --kernel mlp_expand

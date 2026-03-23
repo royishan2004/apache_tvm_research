@@ -5,6 +5,26 @@ from research.workloads.common.rule_based_schedule import (
 )
 
 
+def _sched_k4(mod):
+    sch = tvm.tir.Schedule(mod)
+    sch.work_on("main")
+    block = sch.get_block("C")
+    i, j, k = sch.get_loops(block)
+    k0, k1 = sch.split(k, factors=[None, 4])
+    sch.reorder(i, j, k0, k1)
+    sch.vectorize(j)
+    return sch
+
+def _sched_k8(mod):
+    sch = tvm.tir.Schedule(mod)
+    sch.work_on("main")
+    block = sch.get_block("C")
+    i, j, k = sch.get_loops(block)
+    k0, k1 = sch.split(k, factors=[None, 8])
+    sch.reorder(i, j, k0, k1)
+    sch.vectorize(j)
+    return sch
+
 def _sched_k16(mod):
     sch = tvm.tir.Schedule(mod)
     sch.work_on("main")
@@ -122,6 +142,8 @@ def _sched_full(mod):
 
 
 RECIPES = {
+    "k4":            _sched_k4,
+    "k8":            _sched_k8,
     "k16":           _sched_k16,
     "k32":           _sched_k32,
     "k64":           _sched_k64,
