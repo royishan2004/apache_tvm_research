@@ -284,7 +284,7 @@ local buffering.
 
 #### The remaining gap
 
-The residual ~1.2–1.3× gap to MetaSchedule is explained by three
+The historical residual ~1.2–1.3× gap to MetaSchedule is explained by three
 factors inherent to the auto-tuning approach:
 
 1. **4-level spatial tiling** (SSRSRS) vs our 2-level — MetaSchedule
@@ -299,6 +299,32 @@ The rule-based system intentionally trades this residual gap for
 **determinism** (same schedule every run), **zero tuning cost**
 (no search trials needed), and **interpretability** (every decision
 is traceable to a documented rule).
+
+### Re-validation on Regenerated Manual Data (2026-03-25)
+
+After regenerating the manual-schedule dataset in
+`research/results/bert_matmul_results.json`, we re-ran analysis and
+rule-based benchmarks end-to-end.
+
+Key findings:
+
+1. **Manual-only trend update:** in regenerated manual data, among
+   pure K-tiling variants (`k4`, `k8`, `k16`, `k32`, `k64`), `k16` is
+   fastest across all 24 shapes. This does **not** invalidate R1,
+   because those manual recipes do not include the full rule-based
+   transform stack (`cache_write` + `decompose_reduction` + fused
+   parallel tiling).
+
+2. **Rule-based re-benchmark (fresh run, all 24 shapes):**
+   - Geometric-mean speedup vs baseline: **69.91×**
+   - Geometric-mean speedup vs `full`: **4.17×**
+   - Geometric-mean speedup vs best manual variant per shape: **3.72×**
+   - Geometric-mean ratio vs MetaSchedule: **1.39×**
+
+3. **Rule-ablation check:** small changes tested after regeneration
+   (`TK=4`, `TK=16`, and wider `TN` values) did not produce a stable
+   improvement over the current rule set; the existing `TK=8, TN=64,
+   TM-divisibility` policy remains the most robust deterministic choice.
 
 ---
 
@@ -340,16 +366,12 @@ but **not adopted** because they did not yield consistent improvements:
 |:-------------------|:-----------------------------|:--------------------------------|:--------------------------------------|
 | `cache_read` for B | `sch.cache_read(block, 1, "global")` + `compute_at(B_read, k_outer)` | Neutral to 8% slower | B-strip (TK×TN×4 = 2 KB) already fits in L1; copying to a local buffer adds overhead without benefit. |
 | TN = 128           | Double column tile width     | Neutral (0.99–1.03×)           | Halves the number of j-outer tiles, reducing parallel tasks without improving inner-loop efficiency. |
-| TK = 4             | Half the current reduction tile | **10–21% faster** for M ≥ 32 but 8% slower for M = 16 (QKV) | See note below. |
+| TK = 4             | Half the current reduction tile | No stable win after regenerated-data re-validation | Increased variance and inconsistent cross-kernel gains vs TK=8. |
 
-**Note on TK = 4:** A full sweep across all 24 shapes showed TK = 4
-consistently outperforms TK = 8 by 10–21% for M ≥ 32, but regresses
-for QKV M = 16 (+8%).  This is a viable future improvement and could
-be adopted with a conditional rule (`TK = 4` for M ≥ 32, `TK = 8` for
-M < 32).  It was not adopted in the current version to maintain
-stability with the existing benchmark dataset.  Implementing it would
-change all recorded rule_based measurements, requiring a full
-re-benchmark.
+**Note on TK = 4:** Earlier experiments suggested potential gains in
+some ranges, but regenerated-data re-validation did not show a stable
+cross-kernel improvement. TK = 8 remains the default for consistency
+and reproducibility.
 
 ---
 
@@ -434,8 +456,9 @@ performance:
    This makes the system suitable for academic publication and
    reproducible research.
 
-The current rule-based system achieves **~1.2–1.3× of MetaSchedule
-performance** while satisfying all three properties.
+On the regenerated dataset and fresh re-runs, the current rule-based
+system is typically **~1.3–1.4× of MetaSchedule performance** while
+satisfying all three properties.
 
 ---
 

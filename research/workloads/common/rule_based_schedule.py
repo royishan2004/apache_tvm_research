@@ -9,6 +9,7 @@ import tvm
 _VEC_WIDTH = 8        # AVX2: 256 bit / 32-bit float = 8 lanes
 _UNROLL_LIMIT = 16    # ki ≤ this → explicit unroll
 _AUTO_UNROLL_STEP = 64  # pragma_auto_unroll_max_step for LLVM
+_CACHE_WRITE_SCOPE = "global"  # Empirically best on current CPU backend
 
 def _select_tile_sizes(M, K, N, kernel="qkv"):
     """
@@ -59,7 +60,7 @@ def apply_rule_based_schedule(mod, M, K, N, kernel="qkv"):
     print(f"    [rule_based] M={M} K={K} N={N}  kernel={kernel}  "
           f"→ TM={TM} TN={TN} TK={TK}  VEC={_VEC_WIDTH}  "
           f"unroll_k={'yes' if _should_unroll_k(TK) else 'no'}  "
-          f"cache_write=yes  auto_unroll={_AUTO_UNROLL_STEP}")
+            f"cache_write={_CACHE_WRITE_SCOPE}  auto_unroll={_AUTO_UNROLL_STEP}")
 
     sch = tvm.tir.Schedule(mod)
     sch.work_on("main")
@@ -80,7 +81,7 @@ def apply_rule_based_schedule(mod, M, K, N, kernel="qkv"):
                 i_inner, j_inner_outer, k_inner, j_vec)
 
     # Step 4: Cache-write local C tile (F6)
-    C_write = sch.cache_write(block, 0, "global")
+    C_write = sch.cache_write(block, 0, _CACHE_WRITE_SCOPE)
     sch.reverse_compute_at(C_write, j_outer)
 
     # Step 5: Fuse outer tiles for parallelism (F2, F4)
@@ -123,6 +124,7 @@ def describe_tile_sizes(M, K, N, kernel="qkv"):
         "unroll_k": _should_unroll_k(TK),
         "auto_unroll_step": _AUTO_UNROLL_STEP,
         "cache_write": True,
+        "cache_write_scope": _CACHE_WRITE_SCOPE,
         "parallel_tasks": par_tasks,
         "working_set_ab_bytes": ws_ab_bytes,
         "working_set_c_local_bytes": ws_c_bytes,
