@@ -100,7 +100,7 @@ As such, observing the **standard deviation** alongside the absolute minimum exe
 
 ---
 
-### Trend 1 — Smaller reduction tiles are universally faster
+### Trend 1 — Small strictly-aligned reduction tiles drastically cut latency
 
 | Kernel (K)         | k16 / k32   | k16 / k64   |
 |:-------------------|:-----------:|:-----------:|
@@ -110,20 +110,26 @@ As such, observing the **standard deviation** alongside the absolute minimum exe
 
 *Ratios < 1 mean k16 is faster.*
 
-Manual schedules showed `k16` outperforms `k32` by **1.7–2.6×** and
-`k64` by **1.4–2.4×** across *all three kernels* — including MLP-reduce
-where K = 3072.  The reason is cache locality: with TK = 16, the
-B-strip loaded per reduction step is TK × TN × 4 bytes.  Smaller TK
-keeps this strip in L1, reducing cache misses.
+When testing manual, **single-transform schedules in isolation**, `k16` empirically emerged as the fastest split. It consistently outperformed `k32` by **1.7–2.6×** and `k64` by **1.4–2.4×** across *all three kernels* — including MLP-reduce where K = 3072. The raw reason is cache locality: with TK = 16, the B-strip loaded per reduction step is naturally smaller, keeping it strictly in L1 and reducing cache misses.
 
-A subsequent targeted sweep *with `cache_write` enabled* (see Trend 6)
-then revealed that **TK = 8 outperforms TK = 16 by an additional
-25–40%** across all three kernels.  The smaller tile keeps the B-strip
-at 8 × 64 × 4 = 2 048 bytes — only ~6% of the 32 KB E-core L1 — and
-combined with local C accumulation, allows the compiler to keep more
-of the C tile in registers.
+#### The TK=8 vs TK=16 Discrepancy in the Full Pipeline
 
-**→ Rule R1:** `TK = 8` universally, regardless of K.
+While `TK=16` is optimal as an *isolated single transform*, combining it with a full compilation stack (tiling M and N, spatial vectorization `_VEC_WIDTH=8`, `decompose_reduction`, and local block caching via `cache_write`) creates a paradox. A separate **Ablation Study** (`research/analysis/analysis_tk.py`) executed straight inside the full rule-based pipeline exposes a different truth:
+
+| Geometric Mean (Normalized Speedup vs Baseline `TK=8`) |
+|-------------------------------------------------------|
+| `TK=4` : 0.927x |
+| **`TK=8` : 1.000x** |
+| `TK=16`: 0.862x |
+| `TK=32`: 0.759x |
+| `TK=64`: 0.638x |
+
+*Why does a full pipeline demand `TK=8` when manual sweeps love `TK=16`?*
+1. **L1 Cache and Register Spills**: When `cache_write` block constraints are coupled with `decompose_reduction` loops, `TK=16` generates an inner accumulation workload that frequently spills CPU registers. 
+2. **SIMD Alignment**: Using `TK=8` identically matches the AVX2 spatial vector register footprint (`VEC_WIDTH=8`). The compiler can execute tightly coupled FMA (Fused Multiply-Add) operations without splitting vectors awkwardly over reduction boundaries.
+3. **Footprint Scaling**: A `TK=8` tile keeps the localized B-strip footprint at $8 \times 64 \times 4 = 2,048$ bytes — just ~6% of the tiny Alder Lake E-core 32KB L1 cache. `TK=16` doubles this pressure during decomposed unrolling, suffocating the parallel local C-accumulation block.
+
+**→ Rule R1:** `TK = 8` universally coupled with `cache_write` bounds, safely balancing cache pressure with maximal vector lane usage.
 
 ---
 

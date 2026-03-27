@@ -100,7 +100,8 @@ variant, kernel, run_all_variants, run_all_kernels, iterations = _parse_args()
 
 if run_all_variants:
     run_plan = [
-        (k, v) for k in KERNELS for v in VARIANT_LIST if v != "vec_k" and v != "rule_based" #Expected failure case
+        #INTENTIONAL exclude of vec_k and rule_based for bypassing exception case and creating training data for rule-based model
+        (k, v) for k in KERNELS for v in VARIANT_LIST if v != "vec_k" and v != "rule_based" 
     ]
     print(f"Mode   : {ALL_VARIANTS_TAG}")
     print(f"Kernels: {', '.join(KERNELS)}")
