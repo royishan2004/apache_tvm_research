@@ -73,7 +73,8 @@ def apply_rule_based_schedule(mod, M, K, N, kernel="qkv"):
     k_outer, k_inner = sch.split(k, factors=[None, TK])
 
     # Step 2: Split j for SIMD lanes (F3)
-    vec_width = min(_VEC_WIDTH, TN)
+    # Using 2x vector width (16) encourages LLVM to use 2 ymm registers per inner step
+    vec_width = min(_VEC_WIDTH * 2, TN)
     j_inner_outer, j_vec = sch.split(j_inner, factors=[None, vec_width])
 
     # Step 3: Reorder loops for locality and parallelism
