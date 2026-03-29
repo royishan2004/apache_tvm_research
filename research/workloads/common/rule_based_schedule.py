@@ -10,6 +10,7 @@ _VEC_WIDTH = 8        # AVX2: 256 bit / 32-bit float = 8 lanes
 _UNROLL_LIMIT = 16    # ki ≤ this → explicit unroll
 _AUTO_UNROLL_STEP = 64  # pragma_auto_unroll_max_step for LLVM
 _CACHE_WRITE_SCOPE = "global"  # Empirically best on current CPU backend
+_J_PACK_MULT = 4      # Use wider inner j-pack (32) for better ILP from traces
 
 def _select_tile_sizes(M, K, N, kernel="qkv"):
     """
@@ -55,10 +56,12 @@ def apply_rule_based_schedule(mod, M, K, N, kernel="qkv"):
     """
 
     TM, TN, TK = _select_tile_sizes(M, K, N, kernel)
+    j_pack = min(_VEC_WIDTH * _J_PACK_MULT, TN)
 
     # Diagnostic — always printed so benchmark logs carry the decision
     print(f"    [rule_based] M={M} K={K} N={N}  kernel={kernel}  "
           f"→ TM={TM} TN={TN} TK={TK}  VEC={_VEC_WIDTH}  "
+            f"j_pack={j_pack}  "
           f"unroll_k={'yes' if _should_unroll_k(TK) else 'no'}  "
             f"cache_write={_CACHE_WRITE_SCOPE}  auto_unroll={_AUTO_UNROLL_STEP}")
 
@@ -73,8 +76,8 @@ def apply_rule_based_schedule(mod, M, K, N, kernel="qkv"):
     k_outer, k_inner = sch.split(k, factors=[None, TK])
 
     # Step 2: Split j for SIMD lanes (F3)
-    # Using 2x vector width (16) encourages LLVM to use 2 ymm registers per inner step
-    vec_width = min(_VEC_WIDTH * 2, TN)
+    # Using 4x vector width (32) encourages wider micro-kernel ILP via multiple ymm lanes
+    vec_width = j_pack
     j_inner_outer, j_vec = sch.split(j_inner, factors=[None, vec_width])
 
     # Step 3: Reorder loops for locality and parallelism
@@ -122,6 +125,7 @@ def describe_tile_sizes(M, K, N, kernel="qkv"):
     return {
         "TM": TM, "TN": TN, "TK": TK,
         "VEC": _VEC_WIDTH,
+        "j_pack_width": min(_VEC_WIDTH * _J_PACK_MULT, TN),
         "unroll_k": _should_unroll_k(TK),
         "auto_unroll_step": _AUTO_UNROLL_STEP,
         "cache_write": True,

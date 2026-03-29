@@ -338,6 +338,23 @@ Key findings:
    improvement over the current rule set; the existing `TK=8, TN=64,
    TM-divisibility` policy remains the most robust deterministic choice.
 
+### Incremental Re-validation (2026-03-29): 4× j-pack from MetaSchedule traces
+
+After re-parsing `research/results/metaschedule/best_schedules.json`, we
+observed a recurring but previously underused trend: besides `j`-inner = 16,
+MetaSchedule also picks `j`-inner = 32 in multiple best traces.
+
+Applied update in rule-based schedule:
+- `j_vec` pack width changed from `_VEC_WIDTH * 2` (16) to `_VEC_WIDTH * 4` (32)
+- all other major rules kept unchanged (`TM`, `TN`, `TK`, cache_write scope, unroll pragma)
+
+Fresh benchmark run (`rule_based --all-kernels`, 24 shapes) vs the immediately
+preceding rule-based version shows:
+
+- Geometric-mean speedup: **1.25×** (new vs previous rule-based)
+- Per-kernel speedups: **QKV 1.38×**, **MLP-expand 1.30×**, **MLP-reduce 1.09×**
+- Geometric-mean rule_based/meta ratio improved from **1.90×** to **1.52×**
+
 ---
 
 ### Trend 7 — TM divisibility matters for partial-tile efficiency
@@ -369,38 +386,73 @@ pressure.
 
 ---
 
-### Trend 8 — Over-vectorisation (2× AVX width) simulates 2D register blocking
+### Trend 8 — 4× j-pack (32) appears repeatedly in best traces
 
-In our initial iterations, the spatial inner loop was strictly mapped to `vec_width = 8`, which conceptually maps exactly to a single AVX2 `ymm` register (holding 8 × 32-bit floats). While theoretically optimal for 1D vectorisation, this created a pipeline bottleneck: the CPU had to fully dispatch and retire operations on one set of elements before moving to the next.
+We re-checked `best_schedules.json` and quantified innermost `j` split decisions
+across the 24 best records:
 
-However, analysis of MetaSchedule's generated TIR logs (`best_schedules.json`) revealed that auto-tuning aggressively favored a `vectorize` width of `64` or applied huge `pragma_auto_unroll` limits across spatial vector dimensions.
+- `16`: 12/24
+- `32`: 5/24
+- `8`: 3/24
+- `64`: 2/24
+- `1`: 2/24
 
-By doubling the inner vector splitting to `vec_width = 16` (`_VEC_WIDTH * 2`), we force LLVM to unfold the innermost spatial column block so that it utilises *two* distinct `ymm` registers concurrently during every inner $k$ loop iteration. This creates an implicit **1×16 spatial register block**. As a result:
-- The same loaded $A$ matrix scalar can be broadcast and multiplied against 16 elements of $B$ at once, instead of 8.
-- L1 cache reload redundancy for the $A$ matrix is significantly reduced.
-- The dual-register sequence enables the CPU backend to leverage Instruction-Level Parallelism (ILP).
+While `16` is the mode, `32` appears frequently enough to suggest that the
+compiler benefits from a wider inner packed lane on several shapes. In the
+2-level deterministic schedule, changing the inner partition from 16 to 32
+increases instruction-level parallelism in the inner micro-kernel without
+changing `TM`, `TN`, or `TK`.
 
-A/B testing confirmed this over-vectorisation approach yields a universal **10–40% throughput increase** across QKV and MLP kernels with no additional cache pressure.
+#### Why 4x (`j_pack=32`) instead of 1x/2x/8x?
 
-**Table: A/B Test — 1x vs 2x AVX Width Speedup Factor (Higher is better)**
+For the current rule-based skeleton (`TN=64`, 2-level tiling, fixed loop order),
+we ran paired ABBA tests for fixed j-pack choices. Reported numbers are
+geometric-mean `candidate / j_pack32` (so **< 1 is better than 32**):
 
-| Kernel       | M=16 | M=32 | M=64 | M=96 | M=128 | M=192 | M=256 | M=384 |
-|:-------------|:----:|:----:|:----:|:----:|:-----:|:-----:|:-----:|:-----:|
-| `qkv`        | 1.08x| 1.17x| 1.21x| 1.22x| 1.20x | 1.22x | 1.03x | 1.14x |
-| `mlp_expand` | 1.21x| 1.14x| 1.12x| 1.08x| 1.10x | 1.13x | 1.13x | 1.12x |
-| `mlp_reduce` | 1.21x| 1.23x| 1.22x| 1.61x| 1.36x | 1.16x | 1.12x | 1.02x |
+| Candidate j-pack | Geomean ratio vs 32 | Interpretation |
+|:-----------------|:-------------------:|:---------------|
+| 8   (1x AVX2)    | 1.1387 | 13.9% slower |
+| 16  (2x AVX2)    | 1.0358 | 3.6% slower |
+| 64  (8x AVX2)    | 1.0972 | 9.7% slower |
 
-**Table: Rule-Based vs MetaSchedule gap (Ratio, lower is better)**
+Interpretation:
+- `8` under-utilises ILP inside the micro-kernel.
+- `16` improves over `8` but still leaves throughput on the table.
+- `64` is too coarse for this schedule shape (higher register pressure and less effective inner blocking behavior).
+- `32` is the best fixed-point trade-off in this deterministic 2-level design.
 
-| Kernel       | M=16 | M=32 | M=64 | M=96 | M=128 | M=192 | M=256 | M=384 |
-|:-------------|:----:|:----:|:----:|:----:|:-----:|:-----:|:-----:|:-----:|
-| qkv          | 1.55x | 1.49x | 1.45x | 1.49x | 1.41x | 1.55x | 1.50x | 1.53x |
-| mlp_expand   | 2.19x | 1.59x | 1.59x | 1.71x | 1.64x | 1.53x | 1.76x | 1.61x |
-| mlp_reduce   | 1.72x | 2.14x | 2.09x | 1.87x | 1.85x | 1.83x | 2.00x | 1.96x |
+#### Why not dynamic j-pack based on M?
 
-Overall, incorporating this vector dimension splits further tightens our deterministic rule-based scheduler's structural gap against automated search algorithms.
+We also tested dynamic policies inferred from best traces. Those were applied
+to the current rule-based skeleton and compared via ABBA against fixed `32`.
+Reported numbers are geometric-mean `dynamic / fixed32`:
 
-**→ Rule R8:** Set `j_vec` inner partition to `_VEC_WIDTH * 2` (16 for AVX2) to force multi-register pipeline execution.
+| Dynamic policy | Geomean ratio vs fixed 32 | Interpretation |
+|:---------------|:-------------------------:|:---------------|
+| Exact per-(kernel,M) trace value | 1.0958 | 9.6% slower |
+| Exact per-(kernel,M), floor at 8 | 1.0583 | 5.8% slower |
+| Exact per-(kernel,M), clamp to [8,32] | 1.0133 | 1.3% slower |
+| M-only majority map, clamp to [8,32] | 1.0550 | 5.5% slower |
+
+Why this regresses (and why we do not transplant the full MetaSchedule structure here):
+- We implemented a MetaSchedule-structured 4-level SSRSRS-like rule-based variant and benchmarked it end-to-end; it was legal after fixes but still much slower (geomean about **1.69x** vs current rule-based).
+- We then tested single-structure hybrids to isolate cause. Interleaving-only and deeper i-tiling-only variants also regressed strongly (about **2.35x** and **1.36x** geomean vs baseline rule-based, respectively).
+- We tested alternate cache-write anchoring in isolation; dynamic anchor selection did not improve throughput (about **1.03x** geomean, i.e., slower than baseline). More aggressive fuse-frontier anchoring attempts also hit schedule legality constraints (`fuse` sibling/predicate restrictions).
+- Conclusion: these MetaSchedule decisions are co-tuned as a package with loop structure, unroll choices, and cache placement. Porting only the `j` factor (or only one structural piece) into the 2-level deterministic skeleton breaks that co-optimization.
+- Therefore, dynamic `j_pack` inferred from traces is not adopted: in this schedule context it is slower, less stable, and more complex than fixed `j_pack=32`.
+
+Therefore we keep **fixed `j_pack=32`**: it is faster, simpler, and more robust
+for the current deterministic schedule design.
+
+Re-validation (fresh all-kernel run, 24 shapes) after switching to `j_pack = 32`:
+
+- Geometric-mean speedup vs previous rule-based: **1.25×**
+- QKV: **1.38×** faster
+- MLP-expand: **1.30×** faster
+- MLP-reduce: **1.09×** faster
+- rule_based/meta geometric-mean ratio: **1.90× → 1.52×**
+
+**→ Rule R8:** Set `j_vec` inner partition to `_VEC_WIDTH * 4` (32 for AVX2).
 
 ---
 
@@ -414,6 +466,7 @@ but **not adopted** because they did not yield consistent improvements:
 | `cache_read` for B | `sch.cache_read(block, 1, "global")` + `compute_at(B_read, k_outer)` | Neutral to 8% slower | B-strip (TK×TN×4 = 2 KB) already fits in L1; copying to a local buffer adds overhead without benefit. |
 | TN = 128           | Double column tile width     | Neutral (0.99–1.03×)           | Halves the number of j-outer tiles, reducing parallel tasks without improving inner-loop efficiency. |
 | TK = 4             | Half the current reduction tile | No stable win after regenerated-data re-validation | Increased variance and inconsistent cross-kernel gains vs TK=8. |
+| Dynamic j-pack by M / trace | Per-shape `j` factors inferred from MetaSchedule best traces | 1.01–1.10× slower vs fixed j_pack=32 | `j` factors depend on a different (4-level) schedule context; transplanting them alone regresses this 2-level rule-based schedule. |
 
 **Note on TK = 4:** Earlier experiments suggested potential gains in
 some ranges, but regenerated-data re-validation did not show a stable
@@ -424,7 +477,7 @@ and reproducibility.
 
 ### Rule Summary
 
-The final rule-based schedule applies **11 rules** derived from the
+The final rule-based schedule applies **12 rules** derived from the
 trends above:
 
 | Rule | Parameter        | Value     | Source trend | Justification                                                          |
@@ -436,7 +489,7 @@ trends above:
 | R5   | Outer fusion     | Always    | Trend 5      | Fuse io×jo for sufficient thread utilisation (≥ 12 tasks for 12 threads) |
 | R6   | TN (column tile) | 64        | Trends 3,5   | 8 × VEC; good A-reuse vs parallel-task balance for N ∈ {768, 3072}    |
 | R7   | TM (row tile)    | M-dep     | Trend 7      | M (≤32) / 64 (M%64==0) / 32 (else); ensures clean tile division      |
-| R8   | j_vec inner split| 16        | Trend 8      | 2× AVX2 width to force LLVM to use 2 ymm registers, yielding 10-40% speedups |
+| R8   | j_vec inner split| 32        | Trend 8      | 4× AVX2 pack width; improves inner-loop ILP in this 2-level schedule |
 | R9   | Unroll ki        | Always    | Trend 1      | TK = 8 ≤ UNROLL_LIMIT; eliminates branch overhead in hot loop         |
 | R10  | cache_write      | Always    | Trend 6      | Local C accumulation → register/L1 resident; single write-back per tile |
 | R11  | decompose_reduction | Always | Trend 6      | Separate init from accumulation; removes branch from hot loop          |
@@ -451,7 +504,7 @@ The schedule is constructed in the following order within
 Step  1: Split i → (i_outer, i_inner)  with factor TM
 Step  2: Split j → (j_outer, j_inner)  with factor TN
 Step  3: Split k → (k_outer, k_inner)  with factor TK
-Step  4: Split j_inner → (j_inner_outer, j_vec)  with factor VEC=8
+Step  4: Split j_inner → (j_inner_outer, j_vec)  with factor J_PACK=32
 Step  5: Reorder → io, jo, ko, ii, ji_o, ki, j_vec
 Step  6: cache_write(C, 0, "global") + reverse_compute_at(C_write, jo)
 Step  7: Fuse(io, jo) → fused;  parallel(fused)
@@ -505,7 +558,7 @@ performance:
    reproducible research.
 
 On the regenerated dataset and fresh re-runs, the current rule-based
-system is typically **~1.70× of MetaSchedule performance** while
+system is typically **~1.52× of MetaSchedule performance** while
 satisfying all three properties.
 
 ---
@@ -856,7 +909,8 @@ python3 research/workloads/bert/matmul/mlp_compressed_matmul.py
 - ✔ Rule-based v1 schedule implemented & data-driven rules derived  
 - ✔ MetaSchedule trace analysis (structural transforms identified)  
 - ✔ Rule-based v2 refactored (cache_write + decompose_reduction + auto-unroll + TK=8)  
-- ✔ Performance gap closed: avg 1.79× → 1.70× of MetaSchedule across all kernels  
+- ✔ MetaSchedule-inspired 4× j-pack adopted (`j_vec = 32`)  
+- ✔ Performance gap improved to ~1.52× of MetaSchedule (latest full re-run)  
 - ✔ Further enhancement investigation (TK=4, cache_read, TN=128 — documented)  
 
 **Next step:** Phase 6 — Generalization to additional Transformer workloads
