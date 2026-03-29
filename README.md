@@ -171,6 +171,19 @@ AVX2 processes 8 × float32 = 256 bits per SIMD instruction.  The
 innermost column loop (j) is split so its innermost lane has exactly
 8 elements, matching the hardware vector width.
 
+At this stage, we introduced `j_pack` to solve a different problem than
+SIMD lane width. `VEC_WIDTH=8` is fixed by hardware; `j_pack` decides how
+many vector-width chunks are grouped into one inner `j` micro-kernel tile.
+
+Goal of `j_pack`:
+- increase useful work per inner iteration (higher ILP, less loop-control overhead),
+- keep contiguous vector-friendly memory access,
+- stop before register pressure and write-back overhead dominate.
+
+So `j_pack` is a software blocking knob (`j_pack = VEC_WIDTH * pack_mult`),
+while `VEC_WIDTH` remains a hardware constant. Trend 8 later selects the
+best fixed `pack_mult` empirically.
+
 **→ Rule R3:** Vectorise the innermost j-lane at AVX2 width (8 × float32).
 
 ---
@@ -312,7 +325,7 @@ The rule-based system intentionally trades this residual gap for
 (no search trials needed), and **interpretability** (every decision
 is traceable to a documented rule).
 
-### Re-validation on Regenerated Manual Data (2026-03-25)
+### Re-validation on Regenerated Manual Data
 
 After regenerating the manual-schedule dataset in
 `research/results/bert_matmul_results.json`, we re-ran analysis and
@@ -338,22 +351,8 @@ Key findings:
    improvement over the current rule set; the existing `TK=8, TN=64,
    TM-divisibility` policy remains the most robust deterministic choice.
 
-### Incremental Re-validation (2026-03-29): 4× j-pack from MetaSchedule traces
-
-After re-parsing `research/results/metaschedule/best_schedules.json`, we
-observed a recurring but previously underused trend: besides `j`-inner = 16,
-MetaSchedule also picks `j`-inner = 32 in multiple best traces.
-
-Applied update in rule-based schedule:
-- `j_vec` pack width changed from `_VEC_WIDTH * 2` (16) to `_VEC_WIDTH * 4` (32)
-- all other major rules kept unchanged (`TM`, `TN`, `TK`, cache_write scope, unroll pragma)
-
-Fresh benchmark run (`rule_based --all-kernels`, 24 shapes) vs the immediately
-preceding rule-based version shows:
-
-- Geometric-mean speedup: **1.25×** (new vs previous rule-based)
-- Per-kernel speedups: **QKV 1.38×**, **MLP-expand 1.30×**, **MLP-reduce 1.09×**
-- Geometric-mean rule_based/meta ratio improved from **1.90×** to **1.52×**
+The later `j_pack` refinement, including motivation and measured
+uplift, is documented in **Trend 8** to keep all `j_pack` evidence in one place.
 
 ---
 
@@ -402,6 +401,10 @@ compiler benefits from a wider inner packed lane on several shapes. In the
 2-level deterministic schedule, changing the inner partition from 16 to 32
 increases instruction-level parallelism in the inner micro-kernel without
 changing `TM`, `TN`, or `TK`.
+
+As introduced in Trend 3, `j_pack` is the software blocking factor above
+fixed AVX2 lane width (`VEC_WIDTH=8`). The remainder of this section
+selects the best fixed `j_pack` value for this rule-based schedule.
 
 #### Why 4x (`j_pack=32`) instead of 1x/2x/8x?
 
@@ -813,6 +816,18 @@ python3 -m research.workloads.bert.matmul.qkv_mlp_run full --kernel qkv
 python3 -m research.workloads.bert.matmul.qkv_mlp_run full --kernel mlp_expand
 python3 -m research.workloads.bert.matmul.qkv_mlp_run full --kernel mlp_reduce
 ```
+
+To reproduce the TK ablation analysis used in this report (produces
+`research/results/tk_analysis_results.json` and prints the concluding
+summary), run:
+
+```bash
+python3 -m research.analysis.analysis_tk
+```
+
+The script prefers the `tabulate` package for prettier tables; install it with
+`pip install tabulate` if desired. The script falls back to plain ASCII tables
+when `tabulate` is not available.
 ---
 
 ## Phase 3.4 — All
