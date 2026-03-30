@@ -98,7 +98,9 @@ def apply_rule_based_schedule(mod, M, K, N, kernel="qkv"):
     # Step 7: Vectorise write-back loop
     write_loops = sch.get_loops(C_write)
     if write_loops:
-        sch.vectorize(write_loops[-1])
+        # Mirror j-pack on write-back to keep store-side blocking consistent.
+        write_outer, write_inner = sch.split(write_loops[-1], factors=[None, vec_width])
+        sch.vectorize(write_inner)
 
     # Step 8: Unroll reduction inner loop (F1)
     if _should_unroll_k(TK):

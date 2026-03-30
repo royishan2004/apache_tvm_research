@@ -457,6 +457,34 @@ Re-validation (fresh all-kernel run, 24 shapes) after switching to `j_pack = 32`
 
 **→ Rule R8:** Set `j_vec` inner partition to `_VEC_WIDTH * 4` (32 for AVX2).
 
+#### Incremental Re-validation (2026-03-30): align write-back vectorisation to `j_pack`
+
+After adopting fixed `j_pack=32` for compute, we tested whether the write-back
+path from `C_write` should use the same packing width.
+
+Tested write-back variants (strict ABBA, 24 shapes, same evaluator settings as
+main benchmarks):
+
+| Write-back strategy | Geomean ratio vs previous write-back | Interpretation |
+|:--------------------|:------------------------------------:|:---------------|
+| Split by `j_pack=32` + vectorize inner (`new_writeback_jpack`) | 0.9605 | **3.9% faster overall** |
+| Split by AVX2 width `8` + vectorize inner (`alt_writeback_vec8`) | 0.9850 | 1.5% faster overall |
+
+Per-kernel geomean for adopted strategy (`new/old`):
+- QKV: `0.9728` (2.7% faster)
+- MLP-expand: `0.8939` (10.6% faster)
+- MLP-reduce: `1.0190` (1.9% slower)
+
+Interpretation:
+- The previous write-back vectorization (`vectorize(last_loop)`) could generate
+   a wider-than-needed vectorized write-back lane in this schedule shape.
+- Explicitly splitting write-back by `j_pack` keeps compute and store blocking
+   consistent and gives the best overall geomean on this suite.
+
+Adopted update in `rule_based_schedule.py`:
+- from: `sch.vectorize(write_loops[-1])`
+- to: `split(write_loops[-1], factors=[None, j_pack])` + `vectorize(write_inner)`
+
 ---
 
 ### Investigated but not adopted
@@ -470,6 +498,7 @@ but **not adopted** because they did not yield consistent improvements:
 | TN = 128           | Double column tile width     | Neutral (0.99–1.03×)           | Halves the number of j-outer tiles, reducing parallel tasks without improving inner-loop efficiency. |
 | TK = 4             | Half the current reduction tile | No stable win after regenerated-data re-validation | Increased variance and inconsistent cross-kernel gains vs TK=8. |
 | Dynamic j-pack by M / trace | Per-shape `j` factors inferred from MetaSchedule best traces | 1.01–1.10× slower vs fixed j_pack=32 | `j` factors depend on a different (4-level) schedule context; transplanting them alone regresses this 2-level rule-based schedule. |
+| Write-back split by vec8 | Split `C_write` innermost loop by 8 then vectorize | 0.9850× vs previous write-back (weaker win) | Improves less than `j_pack=32` write-back split (`0.9605×`), so not selected as default. |
 
 **Note on TK = 4:** Earlier experiments suggested potential gains in
 some ranges, but regenerated-data re-validation did not show a stable
@@ -492,7 +521,7 @@ trends above:
 | R5   | Outer fusion     | Always    | Trend 5      | Fuse io×jo for sufficient thread utilisation (≥ 12 tasks for 12 threads) |
 | R6   | TN (column tile) | 64        | Trends 3,5   | 8 × VEC; good A-reuse vs parallel-task balance for N ∈ {768, 3072}    |
 | R7   | TM (row tile)    | M-dep     | Trend 7      | M (≤32) / 64 (M%64==0) / 32 (else); ensures clean tile division      |
-| R8   | j_vec inner split| 32        | Trend 8      | 4× AVX2 pack width; improves inner-loop ILP in this 2-level schedule |
+| R8   | j-pack (compute + write-back) | 32 | Trend 8 | 4× AVX2 pack width; best fixed-point trade-off and better write-back geomean than previous write-back vectorization |
 | R9   | Unroll ki        | Always    | Trend 1      | TK = 8 ≤ UNROLL_LIMIT; eliminates branch overhead in hot loop         |
 | R10  | cache_write      | Always    | Trend 6      | Local C accumulation → register/L1 resident; single write-back per tile |
 | R11  | decompose_reduction | Always | Trend 6      | Separate init from accumulation; removes branch from hot loop          |
@@ -512,7 +541,7 @@ Step  5: Reorder → io, jo, ko, ii, ji_o, ki, j_vec
 Step  6: cache_write(C, 0, "global") + reverse_compute_at(C_write, jo)
 Step  7: Fuse(io, jo) → fused;  parallel(fused)
 Step  8: Vectorize(j_vec)
-Step  9: Vectorize write-back loop (innermost of C_write block)
+Step  9: Split write-back innermost loop by J_PACK=32, then vectorize inner write-back lane
 Step 10: Unroll(k_inner)
 Step 11: Annotate(fused, pragma_auto_unroll_max_step, 64)
 Step 12: Annotate(fused, pragma_unroll_explicit, 1)
@@ -925,6 +954,7 @@ python3 research/workloads/bert/matmul/mlp_compressed_matmul.py
 - ✔ MetaSchedule trace analysis (structural transforms identified)  
 - ✔ Rule-based v2 refactored (cache_write + decompose_reduction + auto-unroll + TK=8)  
 - ✔ MetaSchedule-inspired 4× j-pack adopted (`j_vec = 32`)  
+- ✔ Write-back vectorization aligned to `j_pack=32` (strict ABBA geomean `0.9605×` vs previous write-back)  
 - ✔ Performance gap improved to ~1.52× of MetaSchedule (latest full re-run)  
 - ✔ Further enhancement investigation (TK=4, cache_read, TN=128 — documented)  
 
