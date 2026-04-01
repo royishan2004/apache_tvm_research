@@ -25,6 +25,8 @@ import os
 import time
 from typing import List, Optional
 
+from research.workloads.common.data_aggregator_client import upload_results
+
 SCHEDULES_FILE = "research/results/metaschedule/best_schedules.json"
 RESULTS_FILE = "research/results/bert_matmul_results.json"
 
@@ -105,7 +107,7 @@ def save_best_schedule(
                 except json.JSONDecodeError:
                     results = []
 
-        results.append({
+        new_entry = {
             "kernel": kernel_name,
             "variant": "metaschedule",
             "M": M,
@@ -117,7 +119,8 @@ def save_best_schedule(
             "target": "llvm",
             "source": "MetaSchedule-db",
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        })
+        }
+        results.append(new_entry)
 
         # Keep other entries; sort for stability
         results.sort(key=lambda r: (r.get("kernel", ""), r.get("M", 0)))
@@ -126,6 +129,8 @@ def save_best_schedule(
             json.dump(results, f, indent=2)
 
         print(f"✔ Wrote MetaSchedule summary entry for {kernel_name} M={M} to {RESULTS_FILE}")
+
+        upload_results([new_entry])
     except Exception as e:
         # Non-fatal: log error so user can debug why results file wasn't updated
         print(f"⚠ Failed to update {RESULTS_FILE}: {e}")

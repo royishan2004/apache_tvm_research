@@ -47,6 +47,21 @@ Best and easiest way to use it is to upload your JSON file within the easy to us
 > - `file`: the results file
 > - `profile`: `i5-1235U`
 
+### Profiles and tables
+
+Each `profile` (CPU model) maps to its own table named:
+
+```
+<profile_key>_bert_matmul_results
+```
+
+Notes:
+- Profiles are normalized to lowercase and must match `[A-Za-z0-9 _-]`.
+- The `profile_key` is derived by replacing non-alphanumerics with `_`, trimming `_`, and prefixing `p` if it starts with a digit.
+- The default profile is `i5-1235U`, which maps to `i5_1235u_bert_matmul_results`.
+- On the first upload for the default profile, any existing `bert_matmul_results` table is renamed to the profile table.
+- Legacy tables named `<profile> - bert_matmul_results` are renamed to the new `<profile_key>_bert_matmul_results` form.
+
 
 #### Upload via Scalar Docs
 1) Open http://localhost:3000/docs  

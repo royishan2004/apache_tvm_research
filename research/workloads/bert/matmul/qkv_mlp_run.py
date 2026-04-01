@@ -15,6 +15,7 @@ from research.workloads.common.matmul_templates import matmul_tir
 from research.workloads.common.schedule_recipes import (
     apply_schedule, available_variants,
 )
+from research.workloads.common.data_aggregator_client import upload_results
 
 KERNELS = {
     "qkv":        qkv_shape,
@@ -145,6 +146,7 @@ for iteration in range(1, iterations + 1):
 
     for combo_idx, (cur_kernel, cur_variant) in enumerate(run_plan, 1):
         cur_shape_fn = KERNELS[cur_kernel]
+        new_entries = []
         if total_combos > 1:
             combo_prefix = ""
             if iterations > 1:
@@ -208,8 +210,12 @@ for iteration in range(1, iterations + 1):
                 "total_iterations": iterations,
                 "timestamp":  time.strftime("%Y-%m-%d %H:%M:%S"),
             })
+            new_entries.append(results[-1])
 
         with open(RESULTS_FILE, "w") as f_out:
             json.dump(results, f_out, indent=2)
+
+        if new_entries:
+            upload_results(new_entries)
 
 print(f"\nResults saved to {RESULTS_FILE}")
