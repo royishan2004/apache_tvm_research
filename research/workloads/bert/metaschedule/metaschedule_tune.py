@@ -1,4 +1,6 @@
 import os
+import tvm
+import numpy as np
 from tvm import meta_schedule as ms
 from tvm.target import Target
 from tvm.meta_schedule.tune_context import _normalize_mod
@@ -131,11 +133,27 @@ for iteration in range(1, iterations + 1):
             normalized_mod = _normalize_mod(mod["main"])
             best_record = database.query_tuning_record(normalized_mod, TARGET, "main")
             if best_record is not None:
-                avg_latency = float(sum(best_record.run_secs)) / len(best_record.run_secs)
-                print(f"\n--- Best schedule for kernel={kernel_name} M={M} (latency={avg_latency * 1e6:.2f} µs) ---")
+                # Option 2: Rigorous Post-Tuning Validation
+                sch = tvm.tir.Schedule(mod)
+                best_record.trace.apply_to_schedule(sch, remove_postproc=False)
+                rt_mod = tvm.build(sch.mod, target=TARGET)
+
+                DEV = tvm.cpu(0)
+                A_np = np.random.randn(M, K).astype("float32")
+                B_np = np.random.randn(K, N).astype("float32")
+                C_np = np.zeros((M, N), dtype="float32")
+
+                evaluator = rt_mod.time_evaluator(
+                    "main", dev=DEV, number=50, repeat=3, min_repeat_ms=50
+                )
+                res = evaluator(tvm.nd.array(A_np, DEV), tvm.nd.array(B_np, DEV), tvm.nd.array(C_np, DEV))
+                latency_us = res.mean * 1e6
+                std_us = res.std * 1e6
+
+                print(f"\n--- Best schedule for kernel={kernel_name} M={M} (Rigorous Latency: {latency_us:.2f} µs ± {std_us:.2f} µs) ---")
                 print(best_record.trace)
                 print(f"--- End of best schedule ---\n")
-                save_best_schedule(kernel_name, M, K, N, best_record)
+                save_best_schedule(kernel_name, M, K, N, best_record, latency_us, std_us)
                 print(f"✔ Best schedule saved to best_schedules.json")
             else:
                 print(f"\n⚠ No tuning record found for kernel={kernel_name} M={M}\n")

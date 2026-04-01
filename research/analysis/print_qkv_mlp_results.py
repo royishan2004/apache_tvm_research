@@ -10,6 +10,18 @@ from research.workloads.bert.bert_shapes import (
 import subprocess
 import signal
 
+
+def _fmt_latency_std(latency, std):
+    """Format a latency cell as 'latency ± std' in microseconds.
+
+    Falls back to latency-only when std is missing (older result files).
+    """
+    if pd.isna(latency):
+        return ""
+    if pd.isna(std):
+        return f"{latency:.2f}"
+    return f"{latency:.2f} ± {std:.2f}"
+
 RESULTS_FILE = Path("research/results/bert_matmul_results.json")
 
 # Fallback: try old filename for backward compatibility
@@ -62,17 +74,35 @@ for kernel_name, group in df.groupby("kernel", sort=False):
         print(f"  M sweep = {M_LIST}")
         print()
 
-    pivot = group.pivot_table(
+    latency_pivot = group.pivot_table(
         index="variant",
         columns="M",
         values="latency_us",
         aggfunc="median",       # keep best if duplicates
     )
-    pivot.columns = [f"M={int(c)}" for c in pivot.columns]
-    pivot = pivot.reset_index()
+    if "std_us" in group.columns:
+        std_pivot = group.pivot_table(
+            index="variant",
+            columns="M",
+            values="std_us",
+            aggfunc="median",
+        ).reindex_like(latency_pivot)
+    else:
+        std_pivot = pd.DataFrame(index=latency_pivot.index, columns=latency_pivot.columns)
 
-    print(tabulate(pivot, headers="keys", tablefmt="grid",
-                   showindex=False, floatfmt=".2f"))
+    display_pivot = latency_pivot.copy()
+    for col in display_pivot.columns:
+        display_pivot[col] = [
+            _fmt_latency_std(lat, std)
+            for lat, std in zip(latency_pivot[col], std_pivot[col])
+        ]
+
+    display_pivot.columns = [f"M={int(c)}" for c in display_pivot.columns]
+    display_pivot = display_pivot.reset_index()
+
+    print("  Cell format: latency ± std (µs)")
+
+    print(tabulate(display_pivot, headers="keys", tablefmt="grid", showindex=False))
     print()
 
 # Prompt user whether to display plots (timeout after 30s)

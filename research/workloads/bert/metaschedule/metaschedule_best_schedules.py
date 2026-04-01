@@ -60,9 +60,10 @@ def save_best_schedule(
     K: int,
     N: int,
     best_record,
+    latency_us: float,
+    std_us: float = 0.0,
 ) -> None:
     """Append (or update) the best schedule for a given kernel + M value."""
-    latency_us = float(sum(best_record.run_secs)) / len(best_record.run_secs) * 1e6
     trace = best_record.trace
 
     new_entry = {
@@ -71,6 +72,7 @@ def save_best_schedule(
         "K": K,
         "N": N,
         "latency_us": latency_us,
+        "std_us": std_us,
         "trace": str(trace),
         "decisions": _extract_decisions(trace),
     }
@@ -110,6 +112,7 @@ def save_best_schedule(
             "K": K,
             "N": N,
             "latency_us": latency_us,
+            "std_us": std_us,
             "runs": "MetaSchedule",
             "target": "llvm",
             "source": "MetaSchedule-db",
