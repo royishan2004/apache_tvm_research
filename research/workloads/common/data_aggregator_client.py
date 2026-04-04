@@ -2,10 +2,13 @@ import json
 import os
 import platform
 import re
+import socket
+import signal
 import subprocess
 import uuid
 import urllib.request
 import urllib.error
+import urllib.parse
 from datetime import datetime
 from typing import Iterable, Dict, Any, Tuple, Optional
 
@@ -15,6 +18,7 @@ TABLE_NAME_MAX = 63
 PROFILE_MAX_LEN = max(1, TABLE_NAME_MAX - (len(TABLE_SUFFIX) + 1))
 PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9 _-]+$")
 _CACHED_PROFILE: Optional[str] = None
+DEFAULT_DATA_AGGREGATOR_URL = "http://localhost:3000/api/upload/bert_matmul_results"
 
 
 def upload_results(
@@ -38,7 +42,7 @@ def upload_results(
     if url is None:
         url = os.environ.get(
             "DATA_AGGREGATOR_URL",
-            "http://localhost:3000/api/upload/bert_matmul_results",
+            DEFAULT_DATA_AGGREGATOR_URL,
         )
     profile = resolve_profile(profile)
 
@@ -79,10 +83,177 @@ def upload_results(
     return False
 
 
+def ensure_data_aggregator_connection_or_prompt(
+    runner_name: str,
+    *,
+    prompt_timeout: int = 30,
+    probe_timeout: int = 3,
+    url: Optional[str] = None,
+) -> bool:
+    """Ensure the aggregator server is up, or ask to continue without DB uploads.
+
+    Returns True if the service is reachable or if the user explicitly agrees to
+    continue without it. On agreement, DATA_AGGREGATOR_DISABLE is set for this process.
+    """
+    if os.environ.get("DATA_AGGREGATOR_DISABLE") == "1":
+        print("[data-aggregator] Disabled via DATA_AGGREGATOR_DISABLE=1; skipping connection check.")
+        return True
+
+    reachable, details = _probe_data_aggregator(url=url, timeout=probe_timeout)
+    if reachable:
+        print(f"[data-aggregator] Connected ({details})")
+        return True
+
+    print("\n" + "=" * 88)
+    print("WARNING: No active data aggregator connection detected.")
+    if details:
+        print(f"Connection check details: {details}")
+    print("Start it in another terminal with:")
+    print("  cd services/data_aggregator && npm run dev")
+    print(
+        f"If you continue, {runner_name} will run without DB uploads for this session."
+    )
+    print("=" * 88)
+
+    answer = _input_timeout_default_no(
+        "Run tests without DB connection? [y/N]: ",
+        seconds=prompt_timeout,
+    )
+
+    if answer in ("y", "yes"):
+        os.environ["DATA_AGGREGATOR_DISABLE"] = "1"
+        print("[data-aggregator] Continuing without DB connection; uploads are disabled.")
+        return True
+
+    print("[data-aggregator] Aborting test run. Start data_aggregator with npm run dev and retry.")
+    return False
+
+
+def is_data_aggregator_reachable(
+    url: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> bool:
+    """Check if the expected data aggregator service is reachable."""
+    reachable, _ = _probe_data_aggregator(url=url, timeout=timeout)
+    return reachable
+
+
+def _probe_data_aggregator(
+    url: Optional[str] = None,
+    timeout: Optional[int] = None,
+) -> tuple[bool, str]:
+    """Probe aggregator connectivity and return (is_reachable, details)."""
+    if url is None:
+        url = os.environ.get("DATA_AGGREGATOR_URL", DEFAULT_DATA_AGGREGATOR_URL)
+
+    probe_timeout = _resolve_timeout(timeout)
+    parsed = urllib.parse.urlsplit(url)
+
+    if parsed.scheme and parsed.netloc:
+        host = parsed.hostname or "localhost"
+        if _is_local_host(host):
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            if not _is_local_port_open(host, port, probe_timeout):
+                return False, f"No local listener on {host}:{port}"
+
+    last_error = "Service did not match Apache TVM Research Aggregator signature"
+
+    for probe_url in _resolve_probe_urls(url):
+        request = urllib.request.Request(probe_url, method="GET")
+        try:
+            with urllib.request.urlopen(request, timeout=probe_timeout) as response:
+                if not (200 <= response.status < 300):
+                    last_error = f"Unexpected HTTP {response.status} from {probe_url}"
+                    continue
+                raw_body = response.read(8192).decode("utf-8", errors="ignore")
+                if _looks_like_data_aggregator_response(probe_url, raw_body):
+                    return True, probe_url
+                last_error = f"Signature mismatch at {probe_url}"
+        except urllib.error.HTTPError:
+            last_error = f"HTTP error at {probe_url}"
+            continue
+        except urllib.error.URLError:
+            last_error = f"Connection refused/unreachable at {probe_url}"
+            continue
+        except Exception:
+            last_error = f"Unexpected probe failure at {probe_url}"
+            continue
+
+    return False, last_error
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
+def _resolve_probe_urls(upload_url: str) -> list[str]:
+    parsed = urllib.parse.urlsplit(upload_url)
+    if parsed.scheme and parsed.netloc:
+        base = f"{parsed.scheme}://{parsed.netloc}"
+    else:
+        base = "http://localhost:3000"
+
+    return [
+        f"{base}/openapi.json",
+        f"{base}/",
+    ]
+
+
+def _is_local_host(host: str) -> bool:
+    normalized = host.strip().lower()
+    return normalized in {"localhost", "127.0.0.1", "::1"}
+
+
+def _is_local_port_open(host: str, port: int, timeout_seconds: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=max(1, int(timeout_seconds))):
+            return True
+    except OSError:
+        return False
+
+
+def _looks_like_data_aggregator_response(probe_url: str, raw_body: str) -> bool:
+    body = raw_body.strip()
+    if probe_url.endswith("/openapi.json"):
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            return False
+
+        title = str(((parsed.get("info") or {}).get("title") or "")).strip().lower()
+        paths = parsed.get("paths") or {}
+        return (
+            title == "apache tvm research aggregator"
+            and "/api/upload/bert_matmul_results" in paths
+        )
+
+    return body == "Healthy!"
+
+
+def _input_timeout_default_no(prompt: str, seconds: int = 30) -> str:
+    seconds = max(1, int(seconds))
+
+    if hasattr(signal, "SIGALRM"):
+        def _handler(signum, frame):
+            raise TimeoutError
+
+        old_handler = signal.getsignal(signal.SIGALRM)
+        signal.signal(signal.SIGALRM, _handler)
+        signal.alarm(seconds)
+        try:
+            return input(prompt).strip().lower()
+        except (EOFError, KeyboardInterrupt, TimeoutError):
+            return "n"
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+
+    try:
+        return input(prompt).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return "n"
 
 
 def resolve_profile(profile: Optional[str] = None) -> str:

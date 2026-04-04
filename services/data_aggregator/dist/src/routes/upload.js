@@ -1,6 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { sql } from 'drizzle-orm';
-import { db } from '../db.js';
+import { execute } from '../db.js';
 export const uploadRouter = new OpenAPIHono();
 const TABLE_SUFFIX = 'bert_matmul_results';
 const DEFAULT_PROFILE = 'i5-1235U';
@@ -252,7 +252,7 @@ function clampIdentifier(name) {
     return name.length > TABLE_NAME_MAX ? name.slice(0, TABLE_NAME_MAX) : name;
 }
 async function tableExists(tableName) {
-    const result = await db.execute(sql `
+    const result = await execute(sql `
       select 1
       from information_schema.tables
       where table_schema = 'public' and table_name = ${tableName}
@@ -268,18 +268,18 @@ async function ensureProfileTable(profile) {
         const legacyProfileExists = await tableExists(legacyProfileName);
         const targetExists = await tableExists(tableName);
         if (legacyProfileExists && !targetExists) {
-            await db.execute(sql `alter table ${sql.identifier(legacyProfileName)} rename to ${sql.identifier(tableName)}`);
+            await execute(sql `alter table ${sql.identifier(legacyProfileName)} rename to ${sql.identifier(tableName)}`);
         }
     }
     if (profile === DEFAULT_PROFILE.toLowerCase()) {
         const legacyExists = await tableExists(TABLE_SUFFIX);
         const targetExists = await tableExists(tableName);
         if (legacyExists && !targetExists) {
-            await db.execute(sql `alter table ${sql.identifier(TABLE_SUFFIX)} rename to ${sql.identifier(tableName)}`);
+            await execute(sql `alter table ${sql.identifier(TABLE_SUFFIX)} rename to ${sql.identifier(tableName)}`);
         }
     }
-    await db.execute(sql `create extension if not exists pgcrypto`);
-    await db.execute(sql `
+    await execute(sql `create extension if not exists pgcrypto`);
+    await execute(sql `
     create table if not exists ${sql.identifier(tableName)} (
       id uuid primary key default gen_random_uuid(),
       ingested_at timestamptz not null default now(),
@@ -304,15 +304,15 @@ async function ensureProfileTable(profile) {
     const idxKernelVariantTs = clampIdentifier(`idx_${indexKey}_kernel_variant_ts`);
     const idxShape = clampIdentifier(`idx_${indexKey}_shape`);
     const uniqRow = clampIdentifier(`uniq_${indexKey}_row`);
-    await db.execute(sql `
+    await execute(sql `
     create index if not exists ${sql.identifier(idxKernelVariantTs)}
     on ${sql.identifier(tableName)} (kernel, variant, ts)
   `);
-    await db.execute(sql `
+    await execute(sql `
     create index if not exists ${sql.identifier(idxShape)}
     on ${sql.identifier(tableName)} (m, k, n)
   `);
-    await db.execute(sql `
+    await execute(sql `
     create unique index if not exists ${sql.identifier(uniqRow)}
     on ${sql.identifier(tableName)} (
       kernel,
@@ -380,7 +380,7 @@ async function insertRows(tableName, rows, dedupe) {
         const conflictSql = sql.join(columnNames.map((name) => sql.identifier(name)), sql `, `);
         query = query.append(sql ` on conflict (${conflictSql}) do nothing returning 1`);
     }
-    const result = await db.execute(query);
+    const result = await execute(query);
     if (!dedupe) {
         return { inserted: rows.length, duplicates: 0 };
     }

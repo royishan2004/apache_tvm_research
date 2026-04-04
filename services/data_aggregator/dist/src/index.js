@@ -5,6 +5,7 @@ import { createMarkdownFromOpenApi } from '@scalar/openapi-to-markdown';
 import { prettyJSON } from 'hono/pretty-json';
 import { logger } from 'hono/logger';
 import { uploadRouter } from './routes/upload.js';
+import { disconnectDb, initializeDbConnection, startDbIdleMonitor, stopDbIdleMonitor } from './db.js';
 const app = new OpenAPIHono();
 app.use(prettyJSON());
 app.use(logger());
@@ -46,5 +47,20 @@ serve({
     fetch: app.fetch,
     port: 3000
 }, (info) => {
-    console.log(`Server is running on http://localhost:${info.port}`);
+    const istNow = new Date().toLocaleString('en-GB', { timeZone: 'Asia/Kolkata' });
+    console.log(`Server is running on http://localhost:${info.port}  (IST: ${istNow})`);
+    startDbIdleMonitor();
+    void initializeDbConnection();
+});
+async function shutdown(signal) {
+    console.log(`[server] ${signal} received, shutting down...`);
+    stopDbIdleMonitor();
+    await disconnectDb(`server shutdown (${signal})`);
+    process.exit(0);
+}
+process.on('SIGINT', () => {
+    void shutdown('SIGINT');
+});
+process.on('SIGTERM', () => {
+    void shutdown('SIGTERM');
 });

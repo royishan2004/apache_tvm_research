@@ -1,6 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi'
 import { sql } from 'drizzle-orm'
-import { db } from '../db.js'
+import { execute } from '../db.js'
 
 
 export const uploadRouter = new OpenAPIHono()
@@ -306,7 +306,7 @@ function clampIdentifier(name: string): string {
 }
 
 async function tableExists(tableName: string): Promise<boolean> {
-  const result = await db.execute(
+  const result = await execute(
     sql`
       select 1
       from information_schema.tables
@@ -326,7 +326,7 @@ async function ensureProfileTable(profile: string): Promise<{ tableName: string;
     const legacyProfileExists = await tableExists(legacyProfileName)
     const targetExists = await tableExists(tableName)
     if (legacyProfileExists && !targetExists) {
-      await db.execute(
+      await execute(
         sql`alter table ${sql.identifier(legacyProfileName)} rename to ${sql.identifier(tableName)}`
       )
     }
@@ -336,14 +336,14 @@ async function ensureProfileTable(profile: string): Promise<{ tableName: string;
     const legacyExists = await tableExists(TABLE_SUFFIX)
     const targetExists = await tableExists(tableName)
     if (legacyExists && !targetExists) {
-      await db.execute(
+      await execute(
         sql`alter table ${sql.identifier(TABLE_SUFFIX)} rename to ${sql.identifier(tableName)}`
       )
     }
   }
 
-  await db.execute(sql`create extension if not exists pgcrypto`)
-  await db.execute(sql`
+  await execute(sql`create extension if not exists pgcrypto`)
+  await execute(sql`
     create table if not exists ${sql.identifier(tableName)} (
       id uuid primary key default gen_random_uuid(),
       ingested_at timestamptz not null default now(),
@@ -370,15 +370,15 @@ async function ensureProfileTable(profile: string): Promise<{ tableName: string;
   const idxShape = clampIdentifier(`idx_${indexKey}_shape`)
   const uniqRow = clampIdentifier(`uniq_${indexKey}_row`)
 
-  await db.execute(sql`
+  await execute(sql`
     create index if not exists ${sql.identifier(idxKernelVariantTs)}
     on ${sql.identifier(tableName)} (kernel, variant, ts)
   `)
-  await db.execute(sql`
+  await execute(sql`
     create index if not exists ${sql.identifier(idxShape)}
     on ${sql.identifier(tableName)} (m, k, n)
   `)
-  await db.execute(sql`
+  await execute(sql`
     create unique index if not exists ${sql.identifier(uniqRow)}
     on ${sql.identifier(tableName)} (
       kernel,
@@ -464,7 +464,7 @@ async function insertRows(
     )
   }
 
-  const result = await db.execute(query)
+  const result = await execute(query)
   if (!dedupe) {
     return { inserted: rows.length, duplicates: 0 }
   }

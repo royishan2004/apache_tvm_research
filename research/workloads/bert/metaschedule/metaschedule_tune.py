@@ -7,7 +7,10 @@ from tvm.meta_schedule.tune_context import _normalize_mod
 
 from research.workloads.common.matmul_templates import matmul_tir
 from research.workloads.bert.metaschedule.metaschedule_best_schedules import save_best_schedule
-from research.workloads.common.data_aggregator_client import resolve_profile
+from research.workloads.common.data_aggregator_client import (
+    resolve_profile,
+    ensure_data_aggregator_connection_or_prompt,
+)
 from research.workloads.bert.bert_shapes import (
     qkv_shape,
     mlp_expanded_shape,
@@ -78,6 +81,9 @@ def _parse_args():
 
 
 run_all, selected_kernel, iterations = _parse_args()
+
+if not ensure_data_aggregator_connection_or_prompt("metaschedule_tune"):
+    raise SystemExit(1)
 
 if run_all:
     print(f"Mode: all kernels ({', '.join(KERNELS)})")

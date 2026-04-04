@@ -15,7 +15,11 @@ from research.workloads.common.matmul_templates import matmul_tir
 from research.workloads.common.schedule_recipes import (
     apply_schedule, available_variants,
 )
-from research.workloads.common.data_aggregator_client import upload_results, resolve_profile
+from research.workloads.common.data_aggregator_client import (
+    upload_results,
+    resolve_profile,
+    ensure_data_aggregator_connection_or_prompt,
+)
 
 KERNELS = {
     "qkv":        qkv_shape,
@@ -98,6 +102,8 @@ def _parse_args():
     return variant, kernel, run_all_variants, run_all_kernels, iterations
 
 variant, kernel, run_all_variants, run_all_kernels, iterations = _parse_args()
+if not ensure_data_aggregator_connection_or_prompt("qkv_mlp_run"):
+    sys.exit(1)
 profile = resolve_profile()
 
 if run_all_variants:
