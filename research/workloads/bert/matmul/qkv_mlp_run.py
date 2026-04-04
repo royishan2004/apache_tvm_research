@@ -15,7 +15,7 @@ from research.workloads.common.matmul_templates import matmul_tir
 from research.workloads.common.schedule_recipes import (
     apply_schedule, available_variants,
 )
-from research.workloads.common.data_aggregator_client import upload_results
+from research.workloads.common.data_aggregator_client import upload_results, resolve_profile
 
 KERNELS = {
     "qkv":        qkv_shape,
@@ -98,6 +98,7 @@ def _parse_args():
     return variant, kernel, run_all_variants, run_all_kernels, iterations
 
 variant, kernel, run_all_variants, run_all_kernels, iterations = _parse_args()
+profile = resolve_profile()
 
 if run_all_variants:
     run_plan = [
@@ -118,6 +119,7 @@ else:
     print(f"Variant: {variant}")
 
 print(f"M sweep: {M_LIST}")
+print(f"Profile: {profile}")
 if iterations > 1:
     print(f"Iterations: {iterations}")
 print_config()
@@ -195,6 +197,7 @@ for iteration in range(1, iterations + 1):
             )
 
             results.append({
+                "profile":    profile,
                 "kernel":     cur_kernel,
                 "variant":    cur_variant,
                 "M": M,
@@ -216,6 +219,6 @@ for iteration in range(1, iterations + 1):
             json.dump(results, f_out, indent=2)
 
         if new_entries:
-            upload_results(new_entries)
+            upload_results(new_entries, profile=profile)
 
 print(f"\nResults saved to {RESULTS_FILE}")

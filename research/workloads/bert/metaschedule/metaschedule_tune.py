@@ -7,6 +7,7 @@ from tvm.meta_schedule.tune_context import _normalize_mod
 
 from research.workloads.common.matmul_templates import matmul_tir
 from research.workloads.bert.metaschedule.metaschedule_best_schedules import save_best_schedule
+from research.workloads.common.data_aggregator_client import resolve_profile
 from research.workloads.bert.bert_shapes import (
     qkv_shape,
     mlp_expanded_shape,
@@ -25,9 +26,12 @@ KERNELS = {
 
 os.makedirs(WORK_DIR_BASE, exist_ok=True)
 
+profile = resolve_profile()
+
 print("Starting MetaSchedule tuning for BERT MatMul kernels (per-kernel, per-M)")
 print(f"Target: {TARGET}")
 print(f"Work dir base: {WORK_DIR_BASE}")
+print(f"Profile: {profile}")
 
 
 def _parse_args():
@@ -153,7 +157,7 @@ for iteration in range(1, iterations + 1):
                 print(f"\n--- Best schedule for kernel={kernel_name} M={M} (Rigorous Latency: {latency_us:.2f} µs ± {std_us:.2f} µs) ---")
                 print(best_record.trace)
                 print(f"--- End of best schedule ---\n")
-                save_best_schedule(kernel_name, M, K, N, best_record, latency_us, std_us)
+                save_best_schedule(kernel_name, M, K, N, best_record, latency_us, std_us, profile=profile)
                 print(f"✔ Best schedule saved to best_schedules.json")
             else:
                 print(f"\n⚠ No tuning record found for kernel={kernel_name} M={M}\n")

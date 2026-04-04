@@ -1,10 +1,20 @@
 import json
 import os
+import platform
+import re
+import subprocess
 import uuid
 import urllib.request
 import urllib.error
 from datetime import datetime
 from typing import Iterable, Dict, Any, Tuple, Optional
+
+TABLE_SUFFIX = "bert_matmul_results"
+DEFAULT_PROFILE = "i5-1235U"
+TABLE_NAME_MAX = 63
+PROFILE_MAX_LEN = max(1, TABLE_NAME_MAX - (len(TABLE_SUFFIX) + 1))
+PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9 _-]+$")
+_CACHED_PROFILE: Optional[str] = None
 
 
 def upload_results(
@@ -30,8 +40,7 @@ def upload_results(
             "DATA_AGGREGATOR_URL",
             "http://localhost:3000/api/upload/bert_matmul_results",
         )
-    if profile is None:
-        profile = os.environ.get("DATA_AGGREGATOR_PROFILE", "i5-1235U")
+    profile = resolve_profile(profile)
 
     timeout = _resolve_timeout(timeout)
 
@@ -74,6 +83,140 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
+
+def resolve_profile(profile: Optional[str] = None) -> str:
+    """Resolve the profile to send to the data aggregator.
+
+    Priority: explicit argument -> DATA_AGGREGATOR_PROFILE -> auto-detected CPU -> DEFAULT_PROFILE.
+    Returns a normalized lowercase profile that matches the server's accepted pattern.
+    """
+    global _CACHED_PROFILE
+
+    if profile:
+        normalized = _normalize_profile(profile)
+        if normalized:
+            return normalized
+
+    env_profile = os.environ.get("DATA_AGGREGATOR_PROFILE")
+    if env_profile:
+        normalized = _normalize_profile(env_profile)
+        if normalized:
+            return normalized
+
+    if _CACHED_PROFILE:
+        return _CACHED_PROFILE
+
+    detected = detect_cpu_profile()
+    normalized = _normalize_profile(detected) if detected else None
+    if normalized:
+        _CACHED_PROFILE = normalized
+        return normalized
+
+    fallback = _normalize_profile(DEFAULT_PROFILE) or "unknown"
+    _CACHED_PROFILE = fallback
+    return fallback
+
+
+def detect_cpu_profile() -> Optional[str]:
+    """Detect a CPU brand string and normalize it for profile usage."""
+    raw = _detect_cpu_brand_string()
+    if not raw:
+        return None
+    raw = raw.strip()
+    model = _extract_cpu_model(raw)
+    return model or raw
+
+
+def _normalize_profile(raw: str) -> Optional[str]:
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    cleaned = re.sub(r"[^A-Za-z0-9 _-]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return None
+    cleaned = cleaned.lower()
+    if len(cleaned) > PROFILE_MAX_LEN:
+        cleaned = cleaned[:PROFILE_MAX_LEN].rstrip()
+    if not cleaned or PROFILE_PATTERN.fullmatch(cleaned) is None:
+        return None
+    return cleaned
+
+
+def _extract_cpu_model(raw: str) -> Optional[str]:
+    """Try to extract a compact CPU model identifier (e.g., i5-1235U, ryzen7-5800x)."""
+    lower = raw.lower()
+
+    intel_match = re.search(r"\b(i[3579])[- ]?(\d{4,5}[a-z]*)\b", lower)
+    if intel_match:
+        return f"{intel_match.group(1)}-{intel_match.group(2)}"
+
+    xeon_match = re.search(r"\bxeon\s+([a-z]?[- ]?\d{4,5}[a-z]*)\b", lower)
+    if xeon_match:
+        return f"xeon-{xeon_match.group(1).replace(' ', '')}"
+
+    ryzen_match = re.search(r"\bryzen\s+([3579])\s+(\d{4,5}[a-z]*)\b", lower)
+    if ryzen_match:
+        return f"ryzen{ryzen_match.group(1)}-{ryzen_match.group(2)}"
+
+    apple_match = re.search(r"\b(m\d)\s*(pro|max|ultra)?\b", lower)
+    if apple_match:
+        suffix = apple_match.group(2)
+        if suffix:
+            return f"{apple_match.group(1)}-{suffix}"
+        return apple_match.group(1)
+
+    return None
+
+
+def _detect_cpu_brand_string() -> Optional[str]:
+    system = platform.system()
+    try:
+        if system == "Linux":
+            try:
+                with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
+                    for line in f:
+                        if line.lower().startswith("model name"):
+                            return line.split(":", 1)[1].strip()
+            except OSError:
+                pass
+            try:
+                output = subprocess.run(
+                    ["lscpu"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                ).stdout
+                for line in output.splitlines():
+                    if "Model name" in line or "model name" in line:
+                        return line.split(":", 1)[1].strip()
+            except OSError:
+                return None
+        if system == "Darwin":
+            output = subprocess.run(
+                ["sysctl", "-n", "machdep.cpu.brand_string"],
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout
+            return output.strip() or None
+        if system == "Windows":
+            output = subprocess.run(
+                ["wmic", "cpu", "get", "Name"],
+                check=False,
+                capture_output=True,
+                text=True,
+                shell=True,
+            ).stdout
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            return lines[1] if len(lines) >= 2 else None
+    except Exception:
+        return None
+
+    return None
 
 
 def _resolve_timeout(timeout: Optional[int]) -> int:

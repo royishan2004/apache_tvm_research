@@ -25,7 +25,7 @@ import os
 import time
 from typing import List, Optional
 
-from research.workloads.common.data_aggregator_client import upload_results
+from research.workloads.common.data_aggregator_client import upload_results, resolve_profile
 
 SCHEDULES_FILE = "research/results/metaschedule/best_schedules.json"
 RESULTS_FILE = "research/results/bert_matmul_results.json"
@@ -64,11 +64,14 @@ def save_best_schedule(
     best_record,
     latency_us: float,
     std_us: float = 0.0,
+    profile: Optional[str] = None,
 ) -> None:
     """Append (or update) the best schedule for a given kernel + M value."""
+    profile = resolve_profile(profile)
     trace = best_record.trace
 
     new_entry = {
+        "profile": profile,
         "kernel": kernel_name,
         "M": M,
         "K": K,
@@ -108,6 +111,7 @@ def save_best_schedule(
                     results = []
 
         new_entry = {
+            "profile": profile,
             "kernel": kernel_name,
             "variant": "metaschedule",
             "M": M,
@@ -130,7 +134,7 @@ def save_best_schedule(
 
         print(f"✔ Wrote MetaSchedule summary entry for {kernel_name} M={M} to {RESULTS_FILE}")
 
-        upload_results([new_entry])
+        upload_results([new_entry], profile=profile)
     except Exception as e:
         # Non-fatal: log error so user can debug why results file wasn't updated
         print(f"⚠ Failed to update {RESULTS_FILE}: {e}")

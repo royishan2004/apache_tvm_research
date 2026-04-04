@@ -9,6 +9,7 @@ from research.workloads.bert.bert_shapes import (
     HIDDEN, FF, M_LIST,
     qkv_shape, mlp_expanded_shape, mlp_compressed_shape,
 )
+from research.workloads.common.data_aggregator_client import resolve_profile
 
 RESULTS_FILE = Path("research/results/bert_matmul_results.json")
 if not RESULTS_FILE.exists():
@@ -26,6 +27,21 @@ if not data:
 df = pd.DataFrame(data)
 if "kernel" not in df.columns:
     df["kernel"] = "qkv"
+if "profile" not in df.columns:
+    df["profile"] = "unknown"
+
+
+def _format_profiles(values):
+    profiles = [str(v) for v in values if str(v).strip() and str(v).lower() != "unknown"]
+    if not profiles:
+        return resolve_profile()
+    profiles = sorted(set(profiles))
+    if len(profiles) <= 3:
+        return ", ".join(profiles)
+    return ", ".join(profiles[:3]) + f" (+{len(profiles) - 3} more)"
+
+
+profiles_label = _format_profiles(df["profile"].dropna().unique())
 
 save_mode = "--save" in sys.argv
 args = [a for a in sys.argv[1:] if a != "--save"]
@@ -72,7 +88,7 @@ for kernel_name, group in df.groupby("kernel", sort=False):
         latencies = latencies_us
         ax.plot(m_values, latencies, marker="o", linewidth=1.8, label=variant)
 
-    subtitle_parts = [f"HIDDEN={HIDDEN}  FF={FF}"]
+    subtitle_parts = [f"HIDDEN={HIDDEN}  FF={FF}", f"Profile(s)={profiles_label}"]
     if kernel_name in SHAPE_MAP:
         ex_M = M_LIST[0] if M_LIST else m_values[0]
         _, K_ex, N_ex = SHAPE_MAP[kernel_name](ex_M)
@@ -186,7 +202,7 @@ ax_hm.set_xlabel("M (batch × seq_len)", fontsize=11)
 ax_hm.set_ylabel("Variant", fontsize=11)
 ax_hm.set_title(
     f"BERT MatMul — All Kernels (Heatmap)\n"
-    f"(HIDDEN={HIDDEN}  FF={FF})  ·  cell values in µs",
+    f"(HIDDEN={HIDDEN}  FF={FF}  ·  Profiles={profiles_label})  ·  cell values in µs",
     fontsize=13,
 )
 

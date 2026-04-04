@@ -7,6 +7,7 @@ from research.workloads.bert.bert_shapes import (
     HIDDEN, FF, M_LIST,
     qkv_shape, mlp_expanded_shape, mlp_compressed_shape,
 )
+from research.workloads.common.data_aggregator_client import resolve_profile
 import subprocess
 import signal
 
@@ -39,6 +40,9 @@ if not data:
     exit(0)
 
 df = pd.DataFrame(data)
+
+if "profile" not in df.columns:
+    df["profile"] = "unknown"
 
 # if "kernel" not in df.columns:
 #   df["kernel"] = "qkv"
@@ -73,6 +77,12 @@ for kernel_name, group in df.groupby("kernel", sort=False):
         print(f"  Kernel shape example (M={example_M}): K={K_example}  N={N_example}")
         print(f"  M sweep = {M_LIST}")
         print()
+
+    # Show which CPU profile(s) these rows belong to (group may contain multiple profiles)
+    group_profiles = sorted({str(p) for p in group["profile"].dropna().unique() if str(p).strip() and str(p).lower() != "unknown"})
+    if not group_profiles:
+        group_profiles = [resolve_profile()]
+    print(f"  Profile(s): {', '.join(group_profiles)}")
 
     latency_pivot = group.pivot_table(
         index="variant",
