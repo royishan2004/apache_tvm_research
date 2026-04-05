@@ -26,14 +26,17 @@ The project emphasizes **correctness, controlled experimentation, and explainabl
 
 ### Target Hardware
 
-| Property           | Value                                                 |
-|:-------------------|:------------------------------------------------------|
-| **CPU**            | Intel Core i5-1235U (Alder Lake, 12th Gen)            |
-| **Core topology**  | 2 Performance cores (HT) + 8 Efficiency cores = **12 threads** |
-| **L1-D cache**     | 48 KB (P-core), 32 KB (E-core)                       |
-| **L2 cache**       | 1.25 MB (P-core), 2 MB (shared E-core cluster)       |
-| **SIMD**           | AVX2 — 256-bit registers, 8 × float32 per instruction |
-| **OS / Compiler**  | Linux (WSL2), LLVM backend via TVM                    |
+This research is validated across two distinct CPU environments (both exposing 12 processing threads):
+
+| Property           | Environment A (Mobile/Native)                         | Environment B (Desktop/VM)                            |
+|:-------------------|:------------------------------------------------------|:------------------------------------------------------|
+| **CPU**            | Intel Core i5-1235U (Alder Lake, 12th Gen)            | Intel Core i7-13700 (Raptor Lake, 13th Gen)           |
+| **Core topology**  | 2 Performance cores (HT) + 8 Efficiency = **12 threads** | VirtualBox VM: **12 vCPUs** (1 thread/core allocated) |
+| **RAM**            | Native capacity                                       | **16 GB** (VM allocation)                             |
+| **L1-D cache**     | 48 KB (P-core), 32 KB (E-core)                        | 80 KB per P-core (32 KB I + 48 KB D); 96 KB per E-core (64 KB I + 32 KB D) — host Raptor Lake values exposed to VM |
+| **L2 cache**       | 1.25 MB (P-core), 2 MB (shared E-core cluster)       | 1.25–2 MB per P-core; 2–4 MB per E-core cluster (varies by SKU) |
+| **SIMD**           | AVX2 — 256-bit registers, 8 × float32 per instruction | AVX2 — 256-bit registers, 8 × float32 per instruction |
+| **OS / Compiler**  | Linux (WSL2), LLVM backend via TVM                    | Linux (VirtualBox VM), LLVM backend via TVM           |
 
 ### Workload Shapes (BERT-base)
 
@@ -96,6 +99,8 @@ All results are stored in `research/results/bert_matmul_results.json`.
 
 On modern hybrid mobile architectures (like the target Alder Lake CPU with Performance and Efficiency cores), aggressive power limits (PL1/PL2 thresholds) and OS-level thread scheduling can introduce significant thermal noise during back-to-back kernel execution. Because deterministic matrix multiplication algorithms cannot mathematically run faster than their instruction ceiling, any execution variance is exclusively skewed upward by external system factors.
 
+In our workflow we observed that host environments such as WSL (and other native multi-scheduler setups) can exhibit occasional P↔E core migrations, frequency throttling, and scheduler-driven jitter that increase measurement variance. To obtain more consistent, reproducible microbenchmark results we therefore run the main experiments inside an isolated VirtualBox VM on the i7-13700 host. The VM provides a stable 12‑vCPU allocation and a controlled execution context (16 GB RAM) that reduces host-level thread migration and thermal interference, while leveraging the stronger host hardware. When publishing results we annotate the `profile` (for example, `i7-13700`) and the VM allocation so readers can reproduce the environment.
+
 As such, observing the **standard deviation** alongside the absolute minimum execution time becomes a critical indicator of true hardware-level algorithmic efficiency. A high standard deviation signifies that the CPU encountered frequency throttling or thread migration to slower cores during a test batch. Recognizing this variance is essential when evaluating micro-optimizations, as relying purely on a mean or median metric can obfuscate genuine architectural gains under temporary thermal strain.
 
 ---
@@ -145,8 +150,9 @@ While `TK=16` is optimal as an *isolated single transform*, combining it with a 
 MLP-reduce benefits most because K = 3072 makes the baseline loop
 extremely slow and parallelism eliminates the primary bottleneck.
 
-On the i5-1235U with 12 threads (2P + 8E), the parallel outer loop
-distributes M rows across cores.  Even modest M values (M = 16)
+On the tested 12-thread layouts (both the i5-1235U with 2P+8E cores, and the
+12-vCPU i7-13700 VM allocation), the parallel outer loop distributes M rows
+across available threads.  Even modest M values (M = 16)
 provide enough iterations for reasonable utilisation.
 
 **→ Rule R2:** Always parallelise the outer loop.
@@ -204,6 +210,96 @@ locality within each tile.
 
 ---
 
+### Rationale for `decompose_reduction` Placement (rule_based_schedule.py)
+
+During rule derivation we deliberately placed `decompose_reduction` after
+most structural transforms (tiling, reorder, `cache_write`, `fuse`,
+`parallel`, `vectorize`, and unroll pragmas) rather than immediately
+after tiling/reorder. This location is not arbitrary — it is required
+by TVM's TensorIR scheduling invariants and verified by targeted A/B
+experiments.
+
+What we considered and why we did not move it earlier
+- **Idea:** run `sch.decompose_reduction` immediately after tiling and
+   `sch.reorder` so later passes (cache write, reverse_compute_at,
+   vectorize/unroll) operate on the clean `C_init` / `C_update` split.
+   This seems reasonable because the canonical matmul kernel includes an
+   explicit `T.init()` path and decomposing early appears to simplify the
+   block structure.
+- **Why this looked attractive:** an early decomposition isolates the
+   update-only block that the `cache_write` could target more precisely,
+   potentially producing cleaner local buffers and simpler vector/unroll
+   decisions for the update path.
+
+What we tested (A/B) and concrete failures observed
+- We created minimal TIR reproducer scripts and ran two variants:
+   1) `decompose_reduction` right after `reorder` and before
+       `cache_write`.
+   2) `decompose_reduction` after `cache_write` but before
+       `fuse`/`parallel`/`vectorize`.
+- Results:
+   - Position 1 (early, before `cache_write`) crashes at the
+      `cache_write` primitive with the diagnostic:
+
+      "ScheduleError: The buffer C is expected to be written by single
+      block, but got 2 blocks who write it." 
+
+      Explanation: `decompose_reduction` splits the single `C` writer into
+      `C_init` and `C_update`, so `cache_write` can no longer assume a
+      unique writer for the output buffer — an invariant `cache_write`
+      requires.
+
+   - Position 2 (after `cache_write`, before `parallel`) crashes at the
+      `parallel` primitive with the diagnostic:
+
+      "ScheduleError: The queried subtree root ... does not have compact
+      dataflow, because its child block ... is neither a local complete
+      block nor a local reduction block."
+
+      Explanation: TVM requires the loop subtree targeted by `parallel`
+      (and similar structural transforms) to have "compact dataflow":
+      the block under that subtree must be a properly formed local
+      reduction block (i.e., it must still contain the `init` statement)
+      or a local complete block. Early `decompose_reduction` removes
+      `T.init()` from the update block and breaks these invariants;
+      `parallel` refuses the transformation.
+
+Why we place `decompose_reduction` late (current design)
+- Keeping the accumulation (`T.init()` + update) unified through the
+   tiling/reorder/cache-write/fuse/parallel/vectorize/unroll stages
+   preserves TVM's block invariants. This allows `cache_write` to see a
+   single authoritative writer and allows `parallel`/`vectorize` to
+   detect a legitimate reduction block and apply structural
+   transformations safely.
+- When `decompose_reduction` is executed after these passes, TVM
+   automatically duplicates the applied loop structure and pragmas onto
+   the newly created `C_init` block. This preserves the intended
+   vectorisation, unrolling, and pragma annotations for both init and
+   update paths, producing correct and stable codegen.
+
+Practical takeaways
+- The earlier intuition is correct for many compiler frameworks but
+   **not** for TVM's current TIR schedule semantics: `decompose_reduction`
+   cannot be freely moved ahead of `cache_write` or `parallel` without
+   violating internal invariants.
+- Therefore the rule-based schedule intentionally defers
+   `decompose_reduction` until after the structural passes; this is the
+   only placement that both (a) preserves TVM's correctness checks and
+   (b) retains the micro-kernel semantics we want (vectorised, unrolled
+   update + matching init path).
+
+Files used for verification
+- `/tmp/test_decompose_positions.py` — minimal TIR reproducer used to
+   verify both positions and capture the error traces cited above.
+- `research/workloads/common/rule_based_schedule.py` — the rule-based
+   schedule that applies `decompose_reduction` after loop-level
+   structural transforms (current canonical ordering).
+
+If you want, I can add the minimal reproducer script into the repo's
+`research/` folder and link the exact terminal outputs into
+`research/results/` for reproducibility.
+
+
 ### Trend 5 — Fused outer-tile parallelism adds ~2× over `full`
 
 | Kernel       | full / baseline | rule_based / baseline | Gain  |
@@ -214,8 +310,8 @@ locality within each tile.
 
 The `full` manual schedule only parallelises the raw `i` loop.  For
 small M (e.g. M = 16), this yields only 16 parallel tasks — under-
-subscribing 12 threads and leaving load imbalance between P- and
-E-cores.
+subscribing a 12-thread topology and leaving load imbalance (e.g.,
+between P- and E-cores on native hybrid silicon).
 
 The rule-based schedule **tiles both i and j**, then **fuses** the
 outer tile loops before calling `parallel`.  This generates:
@@ -918,8 +1014,10 @@ Manual vs MetaSchedule performance comparison completed.
 
 The rule-based schedule detects each operator's (M, K, N) shape and kernel
 type and automatically selects tiling, parallelism, vectorisation, and
-unrolling strategies tuned for CPU — **Intel i5-1235U** (Alder Lake,
-2 P-cores + 8 E-cores, 12 threads, AVX2).
+unrolling strategies tuned for multi-core CPUs. The heuristics are
+calibrated for 12-thread topologies, specifically verified on:
+- **Intel i5-1235U** (Alder Lake native, 2 P-cores + 8 E-cores, AVX2)
+- **Intel i7-13700** (Raptor Lake VirtualBox VM, 12 isolated vCPUs, 16 GB RAM, AVX2)
 
 ```bash
 # Run for each kernel (sweeps all M values in M_LIST automatically)
