@@ -25,7 +25,11 @@ import os
 import time
 from typing import List, Optional
 
-from research.workloads.common.data_aggregator_client import upload_results, resolve_profile
+from research.workloads.common.data_aggregator_client import (
+    upload_results,
+    upload_best_schedules,
+    resolve_profile,
+)
 
 SCHEDULES_FILE = "research/results/metaschedule/best_schedules.json"
 RESULTS_FILE = "research/results/bert_matmul_results.json"
@@ -97,6 +101,8 @@ def save_best_schedule(
     os.makedirs(os.path.dirname(SCHEDULES_FILE), exist_ok=True)
     with open(SCHEDULES_FILE, "w") as f:
         json.dump(records, f, indent=2)
+
+    upload_best_schedules([new_entry], profile=profile)
 
     # Also update the global results summary file so we don't need to parse
     # logs separately. Replace any existing metaschedule entry for same

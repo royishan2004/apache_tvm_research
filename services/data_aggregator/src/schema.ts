@@ -6,6 +6,7 @@ import {
   doublePrecision,
   timestamp,
   index,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
@@ -52,3 +53,29 @@ export const bertMatmulResults = pgTable(
 // Inferred types — useful for your ingestion layer
 export type BertMatmulResult      = typeof bertMatmulResults.$inferSelect;
 export type NewBertMatmulResult   = typeof bertMatmulResults.$inferInsert;
+
+export const bestSchedules = pgTable(
+  "best_schedules",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    ingestedAt: timestamp("ingested_at", { withTimezone: true }).defaultNow().notNull(),
+
+    kernel: text("kernel").notNull(),
+    m: integer("m").notNull(),
+    k: integer("k").notNull(),
+    n: integer("n").notNull(),
+
+    latencyUs: doublePrecision("latency_us").notNull(),
+    stdUs: doublePrecision("std_us").notNull(),
+
+    trace: text("trace").notNull(),
+    decisions: jsonb("decisions").$type<unknown[]>().notNull().default(sql`'[]'::jsonb`),
+  },
+  (table) => [
+    index("idx_best_schedules_kernel_shape").on(table.kernel, table.m, table.k, table.n),
+    index("idx_best_schedules_latency").on(table.latencyUs),
+  ]
+)
+
+export type BestScheduleResult = typeof bestSchedules.$inferSelect;
+export type NewBestScheduleResult = typeof bestSchedules.$inferInsert;

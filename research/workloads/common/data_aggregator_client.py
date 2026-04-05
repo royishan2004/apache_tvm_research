@@ -19,6 +19,7 @@ PROFILE_MAX_LEN = max(1, TABLE_NAME_MAX - (len(TABLE_SUFFIX) + 1))
 PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9 _-]+$")
 _CACHED_PROFILE: Optional[str] = None
 DEFAULT_DATA_AGGREGATOR_URL = "http://localhost:3000/api/upload/bert_matmul_results"
+DEFAULT_BEST_SCHEDULES_URL = "http://localhost:3000/api/upload/best_schedules"
 
 
 def upload_results(
@@ -28,7 +29,7 @@ def upload_results(
     dedupe: bool = False,
     timeout: Optional[int] = None,
 ) -> bool:
-    """Upload a list of result entries to the data aggregator.
+    """Upload BERT matmul result entries to the data aggregator.
 
     Controlled by env vars:
     - DATA_AGGREGATOR_URL (default: http://localhost:3000/api/upload/bert_matmul_results)
@@ -36,23 +37,68 @@ def upload_results(
     - DATA_AGGREGATOR_TIMEOUT (seconds, default: 10)
     - DATA_AGGREGATOR_DISABLE (set to "1" to disable)
     """
+    if url is None:
+        url = os.environ.get("DATA_AGGREGATOR_URL", DEFAULT_DATA_AGGREGATOR_URL)
+    return _upload_entries(
+        entries,
+        url=url,
+        profile=profile,
+        dedupe=dedupe,
+        timeout=timeout,
+        payload_filename="bert_matmul_results.json",
+    )
+
+
+def upload_best_schedules(
+    entries: Iterable[Dict[str, Any]],
+    url: Optional[str] = None,
+    profile: Optional[str] = None,
+    dedupe: bool = False,
+    timeout: Optional[int] = None,
+) -> bool:
+    """Upload MetaSchedule best-schedule entries to the data aggregator.
+
+    Controlled by env vars:
+    - DATA_AGGREGATOR_BEST_SCHEDULES_URL (default: http://localhost:3000/api/upload/best_schedules)
+    - DATA_AGGREGATOR_PROFILE (default: auto-detected)
+    - DATA_AGGREGATOR_TIMEOUT (seconds, default: 10)
+    - DATA_AGGREGATOR_DISABLE (set to "1" to disable)
+    """
+    if url is None:
+        url = os.environ.get(
+            "DATA_AGGREGATOR_BEST_SCHEDULES_URL",
+            DEFAULT_BEST_SCHEDULES_URL,
+        )
+    return _upload_entries(
+        entries,
+        url=url,
+        profile=profile,
+        dedupe=dedupe,
+        timeout=timeout,
+        payload_filename="best_schedules.json",
+    )
+
+
+def _upload_entries(
+    entries: Iterable[Dict[str, Any]],
+    *,
+    url: str,
+    profile: Optional[str],
+    dedupe: bool,
+    timeout: Optional[int],
+    payload_filename: str,
+) -> bool:
     if os.environ.get("DATA_AGGREGATOR_DISABLE") == "1":
         return False
 
-    if url is None:
-        url = os.environ.get(
-            "DATA_AGGREGATOR_URL",
-            DEFAULT_DATA_AGGREGATOR_URL,
-        )
-    profile = resolve_profile(profile)
-
-    timeout = _resolve_timeout(timeout)
+    resolved_profile = resolve_profile(profile)
+    resolved_timeout = _resolve_timeout(timeout)
 
     payload = list(entries)
     if not payload:
         return False
 
-    fields = {"profile": profile}
+    fields = {"profile": resolved_profile}
     if dedupe:
         fields["dedupe"] = "1"
 
@@ -60,7 +106,7 @@ def upload_results(
         fields=fields,
         files=[(
             "file",
-            "results.json",
+            payload_filename,
             "application/json",
             json.dumps(payload, default=_json_default).encode("utf-8"),
         )],
@@ -71,7 +117,7 @@ def upload_results(
     request.add_header("Content-Length", str(len(body)))
 
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=resolved_timeout) as response:
             return 200 <= response.status < 300
     except urllib.error.HTTPError as exc:
         print(f"[data-aggregator] Upload failed: HTTP {exc.code}")
@@ -227,6 +273,7 @@ def _looks_like_data_aggregator_response(probe_url: str, raw_body: str) -> bool:
         return (
             title == "apache tvm research aggregator"
             and "/api/upload/bert_matmul_results" in paths
+            and "/api/upload/best_schedules" in paths
         )
 
     return body == "Healthy!"

@@ -2,7 +2,7 @@
 
 This data aggregator was built with `hono` on `nodejs`. It uses `drizzleORM` and `Postgres17` with `TimescaleDB` Plugin on `Neon`.Aggregator
 
-The setup allows you to upload `bert_matmul_results` as a json and store it in Postgres for later Analysis.
+The setup allows you to upload benchmark JSON artifacts and store them in Postgres for later analysis.
 
 ## Setup
 
@@ -49,10 +49,11 @@ Best and easiest way to use it is to upload your JSON file within the easy to us
 
 ### Profiles and tables
 
-Each `profile` (CPU model) maps to its own table named:
+Each `profile` (CPU model) maps to its own table for each dataset:
 
 ```
 <profile_key>_bert_matmul_results
+<profile_key>_best_schedules
 ```
 
 Notes:
@@ -61,11 +62,12 @@ Notes:
 - The default profile is `i5-1235U`, which maps to `i5_1235u_bert_matmul_results`.
 - On the first upload for the default profile, any existing `bert_matmul_results` table is renamed to the profile table.
 - Legacy tables named `<profile> - bert_matmul_results` are renamed to the new `<profile_key>_bert_matmul_results` form.
+- Legacy tables named `<profile> - best_schedules` are renamed to the new `<profile_key>_best_schedules` form.
 
 
 #### Upload via Scalar Docs
 1) Open http://localhost:3000/docs  
-2) Find `POST /api/upload/bert_matmul_results`  
+2) Find either `POST /api/upload/bert_matmul_results` or `POST /api/upload/best_schedules`  
 3) Click “Try it”, choose your `file`, set `profile` if needed, then “Execute”
 
 > Try it out ↓
@@ -74,6 +76,10 @@ Notes:
 curl -X POST http://localhost:3000/api/upload/bert_matmul_results \
   -F "profile=i5-1235U" \
   -F "file=@/path/to/sample.json"
+
+curl -X POST http://localhost:3000/api/upload/best_schedules \
+  -F "profile=i5-1235U" \
+  -F "file=@/path/to/best_schedules.json"
 ```
 
 
