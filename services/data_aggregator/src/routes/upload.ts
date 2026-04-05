@@ -1,6 +1,6 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi'
 import { sql } from 'drizzle-orm'
-import { execute } from '../db.js'
+import { execute, touchActivity } from '../db.js'
 
 
 export const uploadRouter = new OpenAPIHono()
@@ -156,6 +156,8 @@ uploadRouter.openapi(uploadRoute, async (c) => {
     return c.json({ ok: false, error: 'Invalid profile' }, 400)
   }
 
+  touchActivity('upload bert_matmul_results request')
+
   const fullText = await file.text()
   let parsed: unknown
   try {
@@ -307,6 +309,8 @@ uploadRouter.openapi(uploadBestSchedulesRoute, async (c) => {
   if (!normalizedProfile) {
     return c.json({ ok: false, error: 'Invalid profile' }, 400)
   }
+
+  touchActivity('upload best_schedules request')
 
   const fullText = await file.text()
   let parsed: unknown

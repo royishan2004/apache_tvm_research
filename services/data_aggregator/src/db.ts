@@ -8,11 +8,13 @@ config({ path: ".env" });
 
 const DEFAULT_IDLE_DISCONNECT_MS = 5 * 60 * 1000;
 const DEFAULT_ACTIVITY_CHECK_MS = 10 * 1000;
-const TEST_PROCESS_GREP_PATTERN = "qkv_mlp_run|metaschedule_tune";
+const TEST_PROCESS_GREP_PATTERN = "qkv_mlp_run|metaschedule_tune|import_bert_matmul_results";
 
 const TEST_PROCESS_PATTERNS = [
 	/research\.workloads\.bert\.matmul\.qkv_mlp_run/,
 	/research\.workloads\.bert\.metaschedule\.metaschedule_tune/,
+	/\bscripts\/import_bert_matmul_results\.py\b/,
+	/\bimport_bert_matmul_results\.py\b/,
 	/\bqkv_mlp_run\.py\b/,
 	/\bmetaschedule_tune\.py\b/,
 ];
@@ -96,6 +98,11 @@ export async function execute(query: ExecuteArg) {
 
 export function hasActiveDbConnection(): boolean {
 	return pool !== null;
+}
+
+export function touchActivity(reason: string): void {
+	lastActiveTestProcessAt = Date.now();
+	console.log(`[db-monitor] Activity detected (${reason}); inactivity timer reset (${istTimestamp()})`);
 }
 
 export async function disconnectDb(reason: string): Promise<void> {
