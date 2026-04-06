@@ -30,6 +30,43 @@ open http://localhost:3000
 
 4) Open Api Docs on `http://localhost:3000/docs`
 
+## DB Driver Selection (pg vs Neon HTTP)
+
+The service now supports two DB paths:
+
+- `pg` (default): direct PostgreSQL TCP (port `5432`)
+- `neon`: Neon serverless HTTP (HTTPS `443`)
+
+Driver selection rules:
+
+1) If `DB_DRIVER` is set, it is always used (`pg`, `neon`, or `auto`).
+2) If `DB_DRIVER` is not set:
+  - default is `pg`
+  - automatic fallback (`pg` -> `neon`) is enabled only for selected host CPU profiles.
+
+By default, the CPU allow-list includes `i7-13700`, so this machine can fall back to Neon HTTP when TCP `5432` is blocked.
+
+Optional env vars:
+
+```sh
+# Force one driver everywhere:
+DB_DRIVER=pg
+# or
+DB_DRIVER=neon
+# or
+DB_DRIVER=auto
+
+# CPU profiles (comma-separated) where auto fallback is allowed
+# used only when DB_DRIVER is not explicitly set
+DB_NEON_FALLBACK_CPU_PROFILES=i7-13700
+```
+
+Why this was needed here:
+
+- On this VM, direct Postgres TCP (`5432`) intermittently fails (`ETIMEDOUT`/`ECONNREFUSED`).
+- Neon HTTP over `443` remains reachable.
+- The app now keeps `pg` behavior by default and only applies fallback on explicitly targeted CPU profiles.
+
 ---
 
 File Structure
@@ -45,7 +82,7 @@ Best and easiest way to use it is to upload your JSON file within the easy to us
 > [!INFO]
 > Uploads are **multipart/form-data** with two fields:
 > - `file`: the results file
-> - `profile`: `i5-1235U`
+> - `profile`: optional CPU profile, for example `i7-13700`
 
 ### Profiles and tables
 
@@ -59,7 +96,11 @@ Each `profile` (CPU model) maps to its own table for each dataset:
 Notes:
 - Profiles are normalized to lowercase and must match `[A-Za-z0-9 _-]`.
 - The `profile_key` is derived by replacing non-alphanumerics with `_`, trimming `_`, and prefixing `p` if it starts with a digit.
-- The default profile is `i5-1235U`, which maps to `i5_1235u_bert_matmul_results`.
+- Default profile resolution order is:
+  1) request `profile` field
+  2) `DEFAULT_PROFILE` env var
+  3) detected host CPU token (for example `i7-13700`)
+  4) legacy fallback `i5-1235U`
 - On the first upload for the default profile, any existing `bert_matmul_results` table is renamed to the profile table.
 - Legacy tables named `<profile> - bert_matmul_results` are renamed to the new `<profile_key>_bert_matmul_results` form.
 - Legacy tables named `<profile> - best_schedules` are renamed to the new `<profile_key>_best_schedules` form.
@@ -74,11 +115,11 @@ Notes:
 
 ```sh
 curl -X POST http://localhost:3000/api/upload/bert_matmul_results \
-  -F "profile=i5-1235U" \
+  -F "profile=i7-13700" \
   -F "file=@/path/to/sample.json"
 
 curl -X POST http://localhost:3000/api/upload/best_schedules \
-  -F "profile=i5-1235U" \
+  -F "profile=i7-13700" \
   -F "file=@/path/to/best_schedules.json"
 ```
 

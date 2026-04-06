@@ -1,7 +1,10 @@
-import { drizzle } from "drizzle-orm/node-postgres";
+import { drizzle as drizzleNeon } from "drizzle-orm/neon-http";
+import { drizzle as drizzlePg } from "drizzle-orm/node-postgres";
 import { config } from "dotenv";
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { promisify, inspect } from "node:util";
+import * as os from "node:os";
+import { neon } from "@neondatabase/serverless";
 import { Pool } from "pg";
 
 config({ path: ".env" });
@@ -21,11 +24,23 @@ const TEST_PROCESS_PATTERNS = [
 
 const execFileAsync = promisify(execFile);
 
-type DrizzleDb = ReturnType<typeof drizzle>;
-type ExecuteArg = Parameters<DrizzleDb["execute"]>[0];
+type PgDb = ReturnType<typeof drizzlePg>;
+type NeonDb = ReturnType<typeof drizzleNeon>;
+type DrizzleDb = PgDb | NeonDb;
+type ExecuteArg = Parameters<PgDb["execute"]>[0];
 
-let pool: Pool | null = null;
-let db: DrizzleDb | null = null;
+type DbDriver = "auto" | "pg" | "neon";
+
+type DbRuntime = {
+	driver: Exclude<DbDriver, "auto">;
+	db: DrizzleDb;
+	close: () => Promise<void>;
+	healthCheck: () => Promise<void>;
+};
+
+const DEFAULT_NEON_FALLBACK_CPU_PROFILES = ["i7-13700"];
+
+let runtime: DbRuntime | null = null;
 let monitorTimer: NodeJS.Timeout | null = null;
 let lastActiveTestProcessAt = Date.now();
 let shutdownScheduled = false;
@@ -59,45 +74,151 @@ function getActivityCheckMs(): number {
 	return DEFAULT_ACTIVITY_CHECK_MS;
 }
 
-function ensureDb(): DrizzleDb {
-	if (db) {
-		return db;
+function normalizeCpuProfileToken(value: string): string {
+	return value.trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function detectHostCpuProfile(): string | null {
+	const model = os.cpus()?.[0]?.model ?? "";
+	const exact = model.match(/\bi[3579]-\d{4,5}[a-z]?\b/i);
+	if (exact) {
+		return exact[0].toLowerCase();
 	}
 
+	const generic = model.match(/\bi[3579]\b/i);
+	if (generic) {
+		return generic[0].toLowerCase();
+	}
+
+	return null;
+}
+
+function getNeonFallbackCpuProfiles(): string[] {
+	const raw = process.env.DB_NEON_FALLBACK_CPU_PROFILES?.trim();
+	if (!raw) {
+		return DEFAULT_NEON_FALLBACK_CPU_PROFILES;
+	}
+
+	return raw
+		.split(",")
+		.map((entry) => normalizeCpuProfileToken(entry))
+		.filter((entry) => entry.length > 0);
+}
+
+function shouldUseAutoFallbackByCpu(): boolean {
+	const hostProfile = detectHostCpuProfile();
+	if (!hostProfile) {
+		return false;
+	}
+
+	const normalizedHost = normalizeCpuProfileToken(hostProfile);
+	const allowList = getNeonFallbackCpuProfiles();
+	return allowList.includes(normalizedHost);
+}
+
+function getDbDriverPreference(): DbDriver {
+	const raw = process.env.DB_DRIVER?.trim().toLowerCase();
+	if (raw === "pg" || raw === "neon" || raw === "auto") {
+		return raw;
+	}
+
+	// Default to pg everywhere, and enable automatic pg->neon fallback
+	// only for selected host CPU profiles (for example i7-13700).
+	return shouldUseAutoFallbackByCpu() ? "auto" : "pg";
+}
+
+function isNetworkConnectionError(error: unknown): boolean {
+	const code = error instanceof Error ? (error as { code?: string }).code : undefined;
+	return code === "ETIMEDOUT" || code === "ECONNREFUSED" || code === "EHOSTUNREACH" || code === "ENETUNREACH" || code === "EAI_AGAIN";
+}
+
+function createPgRuntime(): DbRuntime {
 	const poolMaxRaw = Number(process.env.DB_POOL_MAX);
 	const poolIdleRaw = Number(process.env.DB_POOL_IDLE_TIMEOUT_MS);
-
-	pool = new Pool({
+	const pool = new Pool({
 		connectionString: getDatabaseUrl(),
 		max: Number.isFinite(poolMaxRaw) && poolMaxRaw > 0 ? poolMaxRaw : 5,
 		idleTimeoutMillis:
 			Number.isFinite(poolIdleRaw) && poolIdleRaw >= 1000 ? poolIdleRaw : 30_000,
 	});
+	const db = drizzlePg(pool);
+	return {
+		driver: "pg",
+		db,
+		healthCheck: async () => {
+			await pool.query("select 1");
+		},
+		close: async () => {
+			await pool.end();
+		},
+	};
+}
 
-	db = drizzle(pool);
-	console.log(`[db] Connection established (${istTimestamp()})`);
-	return db;
+function createNeonRuntime(): DbRuntime {
+	const sql = neon(getDatabaseUrl());
+	const db = drizzleNeon(sql);
+	return {
+		driver: "neon",
+		db,
+		healthCheck: async () => {
+			await sql`select 1`;
+		},
+		close: async () => {
+			// Neon HTTP queries do not hold a persistent TCP pool.
+		},
+	};
+}
+
+async function ensureDb(): Promise<DrizzleDb> {
+	if (runtime) {
+		return runtime.db;
+	}
+
+	const preference = getDbDriverPreference();
+	const hostProfile = detectHostCpuProfile() ?? "unknown";
+	console.log(`[db] Driver preference=${preference}, host cpu profile=${hostProfile} (${istTimestamp()})`);
+	const candidates: Array<Exclude<DbDriver, "auto">> = preference === "auto" ? ["pg", "neon"] : [preference];
+	let lastError: unknown = null;
+
+	for (const driver of candidates) {
+		const candidate = driver === "pg" ? createPgRuntime() : createNeonRuntime();
+		try {
+			await candidate.healthCheck();
+			runtime = candidate;
+			console.log(`[db] Connection established via ${candidate.driver} (${istTimestamp()})`);
+			return candidate.db;
+		} catch (error) {
+			lastError = error;
+			const msg = error instanceof Error ? error.message : String(error);
+			console.warn(`[db] ${candidate.driver} connection failed (${istTimestamp()}): ${msg}`);
+			console.warn(`[db] ${candidate.driver} connection details: ${inspect(error, { depth: 6 })}`);
+			await candidate.close().catch(() => undefined);
+			if (preference !== "auto" || !isNetworkConnectionError(error) || driver === "neon") {
+				break;
+			}
+		}
+	}
+
+	throw lastError instanceof Error ? lastError : new Error("Failed to initialize database connection.");
 }
 
 export async function initializeDbConnection(): Promise<void> {
 	try {
-		ensureDb();
-		if (pool) {
-			await pool.query("select 1");
-			console.log(`[db] Startup health-check passed (${istTimestamp()})`);
-		}
+		await ensureDb();
+		console.log(`[db] Startup health-check passed (${istTimestamp()})`);
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error);
 		console.warn(`[db] Startup connection check failed (${istTimestamp()}): ${msg}`);
+		console.warn(`[db] Startup connection details: ${inspect(error, { depth: 6 })}`);
 	}
 }
 
 export async function execute(query: ExecuteArg) {
-	return ensureDb().execute(query);
+	return (await ensureDb()).execute(query);
 }
 
 export function hasActiveDbConnection(): boolean {
-	return pool !== null;
+	return runtime !== null;
 }
 
 export function touchActivity(reason: string): void {
@@ -106,20 +227,20 @@ export function touchActivity(reason: string): void {
 }
 
 export async function disconnectDb(reason: string): Promise<void> {
-	if (!pool) {
+	if (!runtime) {
 		return;
 	}
 
-	const activePool = pool;
-	pool = null;
-	db = null;
+	const activeRuntime = runtime;
+	runtime = null;
 
 	try {
-		await activePool.end();
+		await activeRuntime.close();
 		console.log(`[db] Connection closed (${reason}) (${istTimestamp()})`);
 	} catch (error) {
 		const msg = error instanceof Error ? error.message : String(error);
 		console.warn(`[db] Failed to close connection cleanly: ${msg}`);
+		console.warn(`[db] Disconnect details: ${inspect(error, { depth: 4 })}`);
 	}
 }
 

@@ -1,13 +1,27 @@
 import { OpenAPIHono, createRoute, z } from '@hono/zod-openapi';
 import { sql } from 'drizzle-orm';
+import * as os from 'node:os';
 import { execute, touchActivity } from '../db.js';
 export const uploadRouter = new OpenAPIHono();
 const TABLE_SUFFIX = 'bert_matmul_results';
 const BEST_SCHEDULES_TABLE_SUFFIX = 'best_schedules';
-const DEFAULT_PROFILE = 'i5-1235U';
+const LEGACY_DEFAULT_PROFILE = 'i5-1235U';
+const DEFAULT_PROFILE = detectDefaultProfile();
 const PROFILE_PATTERN = /^[A-Za-z0-9 _-]+$/;
 const TABLE_NAME_MAX = 63;
 const PROFILE_MAX_LEN = Math.max(1, TABLE_NAME_MAX - (TABLE_SUFFIX.length + 1));
+function detectDefaultProfile() {
+    const envProfile = process.env.DEFAULT_PROFILE?.trim();
+    if (envProfile) {
+        return envProfile;
+    }
+    const model = os.cpus()?.[0]?.model ?? '';
+    const match = model.match(/\bi[3579]-\d{4,5}[a-z]?\b/i);
+    if (match) {
+        return match[0];
+    }
+    return LEGACY_DEFAULT_PROFILE;
+}
 const uploadRoute = createRoute({
     method: 'post',
     path: '/api/upload/bert_matmul_results',
@@ -23,8 +37,8 @@ const uploadRoute = createRoute({
                             .string()
                             .optional()
                             .openapi({
-                            description: 'Hardware profile for the results (CPU model). Defaults to i5-1235U.',
-                            example: 'i5-1235U',
+                            description: `Hardware profile for the results (CPU model). Defaults to ${DEFAULT_PROFILE}.`,
+                            example: DEFAULT_PROFILE,
                         }),
                         file: z.any().openapi({
                             type: 'string',
@@ -168,8 +182,8 @@ const uploadBestSchedulesRoute = createRoute({
                             .string()
                             .optional()
                             .openapi({
-                            description: 'Hardware profile for the results (CPU model). Defaults to i5-1235U.',
-                            example: 'i5-1235U',
+                            description: `Hardware profile for the results (CPU model). Defaults to ${DEFAULT_PROFILE}.`,
+                            example: DEFAULT_PROFILE,
                         }),
                         file: z.any().openapi({
                             type: 'string',
