@@ -1032,12 +1032,46 @@ Results are appended to the same unified results file and appear as the
 
 ---
 
-## Additional Canonical Kernels (MLP Layers)
+## Phase 6 — 80/20 MetaSchedule Pruning Tuner
+
+This phase runs an iterative, history-aware MetaSchedule pruning tuner that searches for a much cheaper
+tuning configuration while preserving near-baseline performance for the BERT MatMul kernels.
+
+Basic runs (from repository root):
 
 ```bash
-python3 research/workloads/bert/matmul/mlp_expanded_matmul.py
-python3 research/workloads/bert/matmul/mlp_compressed_matmul.py
+# Prune (default mode, runs baseline then iterative pruning)
+python3 -m research.workloads.bert.metaschedule.metaschedule_8020_tuner --iterations 1
+
+# Benchmark-only (use existing work dirs; no new tuning trials)
+python3 -m research.workloads.bert.metaschedule.metaschedule_8020_tuner --benchmark-only \
+   --best-config-path research/results/metaschedule/best_pruned_config.json
+
+# Compare saved pruned config vs baseline
+python3 -m research.workloads.bert.metaschedule.metaschedule_8020_tuner --compare-against-baseline \
+   --best-config-path research/results/metaschedule/best_pruned_config.json
+
+# Tune only one kernel (example: qkv)
+python3 -m research.workloads.bert.metaschedule.metaschedule_8020_tuner --kernel qkv --iterations 1
+
+# Common options you may want:
+#  --work-dir-base <path>    # write/read per-task DBs under this base (default research/results/metaschedule/8020)
+#  --force-rerun             # ignore cached JSON experiments and rerun
+#  --profile <name>          # annotate persisted schedules with a named profile
 ```
+
+Default outputs and locations:
+
+- `research/results/metaschedule/best_pruned_config.json` — selected pruned config, metrics, and a recommended `tune_tir` block.
+- `research/results/metaschedule/pruning_experiments.json` — full experiment log and cached runs.
+- Per-task work directories under the work-dir base (default `research/results/metaschedule/8020`) containing `database_workload.json` and `database_tuning_record.json`.
+- Persisted best schedules appended via the repo helper to `research/results/metaschedule/best_schedules.json`.
+- Log file: `research/results/metaschedule/8020/metaschedule_8020_tuner.log`.
+
+Notes:
+- Ensure TVM with MetaSchedule and `numpy` are available in your Python environment.
+- The script uses the repo data-aggregator client and may prompt to confirm a profile or connection.
+
 
 ---
 
