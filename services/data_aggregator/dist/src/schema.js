@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, integer, doublePrecision, timestamp, index, jsonb, } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, integer, boolean, doublePrecision, timestamp, index, uniqueIndex, jsonb, } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 export const bertMatmulResults = pgTable("bert_matmul_results", {
     // identity
@@ -44,4 +44,55 @@ export const bestSchedules = pgTable("best_schedules", {
 }, (table) => [
     index("idx_best_schedules_kernel_shape").on(table.kernel, table.m, table.k, table.n),
     index("idx_best_schedules_latency").on(table.latencyUs),
+]);
+export const bestPrunedConfig = pgTable("best_pruned_config", {
+    id: uuid("id").primaryKey().default(sql `gen_random_uuid()`),
+    ingestedAt: timestamp("ingested_at", { withTimezone: true }).defaultNow().notNull(),
+    ts: timestamp("ts", { withTimezone: true }).notNull(),
+    target: text("target").notNull().default(""),
+    selectedConfigName: text("selected_config_name").notNull(),
+    selectedStateToken: text("selected_state_token").notNull().default(""),
+    selectionReason: text("selection_reason").notNull().default(""),
+    latencyRetention: doublePrecision("latency_retention"),
+    timeReduction: doublePrecision("time_reduction"),
+    trialReduction: doublePrecision("trial_reduction"),
+    score: doublePrecision("score"),
+    payloadHash: text("payload_hash").notNull(),
+    payload: jsonb("payload").$type().notNull(),
+}, (table) => [
+    index("idx_best_pruned_config_ts").on(table.ts),
+    index("idx_best_pruned_config_name").on(table.selectedConfigName),
+    index("idx_best_pruned_config_score").on(table.score),
+    uniqueIndex("uniq_best_pruned_config_payload_hash").on(table.payloadHash),
+]);
+export const pruningExperiments = pgTable("pruning_experiments", {
+    id: uuid("id").primaryKey().default(sql `gen_random_uuid()`),
+    ingestedAt: timestamp("ingested_at", { withTimezone: true }).defaultNow().notNull(),
+    runId: text("run_id").notNull(),
+    ts: timestamp("ts", { withTimezone: true }).notNull(),
+    mode: text("mode").notNull(),
+    iteration: integer("iteration").notNull(),
+    configName: text("config_name").notNull(),
+    configHash: text("config_hash").notNull(),
+    tasksSignature: text("tasks_signature").notNull().default(""),
+    isBaseline: boolean("is_baseline").notNull().default(false),
+    benchmarkOnly: boolean("benchmark_only").notNull().default(false),
+    numTasks: integer("num_tasks"),
+    numSuccessfulTasks: integer("num_successful_tasks"),
+    allTasksSucceeded: boolean("all_tasks_succeeded"),
+    latencyGeomeanUs: doublePrecision("latency_geomean_us"),
+    totalTuningTimeSec: doublePrecision("total_tuning_time_sec"),
+    totalTrials: integer("total_trials"),
+    latencyRetention: doublePrecision("latency_retention"),
+    timeReduction: doublePrecision("time_reduction"),
+    trialReduction: doublePrecision("trial_reduction"),
+    score: doublePrecision("score"),
+    metadata: jsonb("metadata").$type().notNull().default(sql `'{}'::jsonb`),
+    latestPruningRun: jsonb("latest_pruning_run").$type().notNull().default(sql `'{}'::jsonb`),
+    experiment: jsonb("experiment").$type().notNull(),
+}, (table) => [
+    uniqueIndex("uniq_pruning_experiments_run_id").on(table.runId),
+    index("idx_pruning_experiments_ts").on(table.ts),
+    index("idx_pruning_experiments_cfg_iter").on(table.configName, table.iteration),
+    index("idx_pruning_experiments_score").on(table.score),
 ]);

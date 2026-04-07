@@ -39,6 +39,8 @@ from research.workloads.bert.metaschedule.metaschedule_best_schedules import sav
 from research.workloads.common.data_aggregator_client import (
 	ensure_data_aggregator_connection_or_prompt,
 	resolve_profile,
+	upload_best_pruned_config,
+	upload_pruning_experiments,
 )
 from research.workloads.common.matmul_templates import matmul_tir
 
@@ -1665,6 +1667,7 @@ def main() -> int:
 			profile=profile,
 		)
 		_write_json(PRUNING_EXPERIMENTS_FILE, store)
+		upload_pruning_experiments(store, profile=profile)
 
 		LOGGER.info("Comparison completed")
 		LOGGER.info(
@@ -1742,6 +1745,8 @@ def main() -> int:
 
 	_write_json(BEST_PRUNED_CONFIG_FILE, best_payload)
 	_write_json(PRUNING_EXPERIMENTS_FILE, store)
+	upload_best_pruned_config(best_payload, profile=profile)
+	upload_pruning_experiments(store, profile=profile)
 
 	selected_agg = selected_exp.get("aggregate", {})
 	LOGGER.info("Selected best pruned configuration: %s", selected_exp.get("config_name"))

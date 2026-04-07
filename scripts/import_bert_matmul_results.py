@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -13,30 +14,52 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BERT_RESULTS = ROOT / "research" / "results" / "bert_matmul_results.json"
 DEFAULT_BEST_SCHEDULES = ROOT / "research" / "results" / "metaschedule" / "best_schedules.json"
+DEFAULT_BEST_PRUNED_CONFIG = ROOT / "research" / "results" / "metaschedule" / "best_pruned_config.json"
+DEFAULT_PRUNING_EXPERIMENTS = ROOT / "research" / "results" / "metaschedule" / "pruning_experiments.json"
 DEFAULT_ENV = ROOT / "services" / "data_aggregator" / ".env"
 IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_API_TIMEOUT = 300
 
 DATASET_BERT = "bert-matmul"
 DATASET_BEST = "best-schedules"
-DATASET_CHOICES = (DATASET_BERT, DATASET_BEST)
+DATASET_BEST_PRUNED = "best-pruned-config"
+DATASET_PRUNING = "pruning-experiments"
+DATASET_CHOICES = (DATASET_BERT, DATASET_BEST, DATASET_BEST_PRUNED, DATASET_PRUNING)
 
 BERT_TABLE_SUFFIX = "bert_matmul_results"
 BEST_SCHEDULES_TABLE_SUFFIX = "best_schedules"
+BEST_PRUNED_CONFIG_TABLE_SUFFIX = "best_pruned_config"
+PRUNING_EXPERIMENTS_TABLE_SUFFIX = "pruning_experiments"
 DEFAULT_PROFILE = "i5-1235U"
 PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9 _-]+$")
 TABLE_NAME_MAX = 63
-PROFILE_MAX_LEN = max(1, TABLE_NAME_MAX - (len(BERT_TABLE_SUFFIX) + 1))
+PROFILE_MAX_LEN = max(
+    1,
+    TABLE_NAME_MAX
+    - (
+        max(
+            len(BERT_TABLE_SUFFIX),
+            len(BEST_SCHEDULES_TABLE_SUFFIX),
+            len(BEST_PRUNED_CONFIG_TABLE_SUFFIX),
+            len(PRUNING_EXPERIMENTS_TABLE_SUFFIX),
+        )
+        + 1
+    ),
+)
 
 DEFAULT_BERT_API_URL = "http://localhost:3000/api/upload/bert_matmul_results"
 DEFAULT_BEST_SCHEDULES_API_URL = "http://localhost:3000/api/upload/best_schedules"
+DEFAULT_BEST_PRUNED_CONFIG_API_URL = "http://localhost:3000/api/upload/best_pruned_config"
+DEFAULT_PRUNING_EXPERIMENTS_API_URL = "http://localhost:3000/api/upload/pruning_experiments"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from research.workloads.common.data_aggregator_client import (  # noqa: E402
     resolve_profile as resolve_runtime_profile,
+    upload_best_pruned_config,
     upload_best_schedules,
+    upload_pruning_experiments,
     upload_results,
 )
 
@@ -138,6 +161,26 @@ def to_float(value: Any) -> Optional[float]:
         return None
 
 
+def to_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        return None
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 def normalize_bert_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     kernel = entry.get("kernel")
     variant = entry.get("variant")
@@ -231,6 +274,117 @@ def normalize_best_schedule_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[
     }, None
 
 
+def normalize_best_pruned_config_payload(
+    payload: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    ts = parse_timestamp(payload.get("timestamp", payload.get("ts")))
+    if ts is None:
+        return None, "Invalid timestamp"
+
+    selected_config = payload.get("selected_config")
+    selected_metrics = payload.get("selected_metrics")
+
+    if not isinstance(selected_config, dict):
+        return None, "Missing selected_config object"
+    if not isinstance(selected_metrics, dict):
+        selected_metrics = {}
+
+    selected_config_name = selected_config.get("name")
+    if not isinstance(selected_config_name, str) or not selected_config_name:
+        return None, "Missing selected_config.name"
+
+    payload_json = canonical_json(payload)
+    if payload_json is None:
+        return None, "Invalid payload"
+
+    payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+
+    return {
+        "ts": ts,
+        "target": str(payload.get("target") or ""),
+        "selected_config_name": selected_config_name,
+        "selected_state_token": str(selected_config.get("state_token") or ""),
+        "selection_reason": str(payload.get("selection_reason") or ""),
+        "latency_retention": to_float(selected_metrics.get("latency_retention")),
+        "time_reduction": to_float(selected_metrics.get("time_reduction")),
+        "trial_reduction": to_float(selected_metrics.get("trial_reduction")),
+        "score": to_float(selected_metrics.get("score")),
+        "payload": payload,
+        "payload_json": payload_json,
+        "payload_hash": payload_hash,
+    }, None
+
+
+def normalize_pruning_experiment_entry(
+    entry: Dict[str, Any],
+    metadata: Dict[str, Any],
+    latest_pruning_run: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    run_id_raw = entry.get("run_id", entry.get("runId"))
+    run_id = run_id_raw if isinstance(run_id_raw, str) else ""
+    if not run_id:
+        return None, "Missing run_id"
+
+    ts = parse_timestamp(entry.get("timestamp", entry.get("ts")))
+    if ts is None:
+        return None, "Invalid timestamp"
+
+    config_name_raw = entry.get("config_name", entry.get("configName"))
+    config_hash_raw = entry.get("config_hash", entry.get("configHash"))
+    config_name = config_name_raw if isinstance(config_name_raw, str) else ""
+    config_hash = config_hash_raw if isinstance(config_hash_raw, str) else ""
+    if not config_name or not config_hash:
+        return None, "Missing config_name or config_hash"
+
+    aggregate = entry.get("aggregate") if isinstance(entry.get("aggregate"), dict) else {}
+
+    experiment_json = canonical_json(entry)
+    metadata_json = canonical_json(metadata)
+    latest_pruning_run_json = canonical_json(latest_pruning_run)
+    if experiment_json is None or metadata_json is None or latest_pruning_run_json is None:
+        return None, "Invalid experiment payload"
+
+    return {
+        "run_id": run_id,
+        "ts": ts,
+        "mode": str(entry.get("mode") or "pruning"),
+        "iteration": to_int(entry.get("iteration")) or 0,
+        "config_name": config_name,
+        "config_hash": config_hash,
+        "tasks_signature": str(entry.get("tasks_signature", entry.get("tasksSignature")) or ""),
+        "is_baseline": to_bool(entry.get("is_baseline", entry.get("isBaseline"))) or False,
+        "benchmark_only": to_bool(entry.get("benchmark_only", entry.get("benchmarkOnly"))) or False,
+        "num_tasks": to_int(aggregate.get("num_tasks", aggregate.get("numTasks"))),
+        "num_successful_tasks": to_int(
+            aggregate.get("num_successful_tasks", aggregate.get("numSuccessfulTasks"))
+        ),
+        "all_tasks_succeeded": to_bool(
+            aggregate.get("all_tasks_succeeded", aggregate.get("allTasksSucceeded"))
+        ),
+        "latency_geomean_us": to_float(
+            aggregate.get("latency_geomean_us", aggregate.get("latencyGeomeanUs"))
+        ),
+        "total_tuning_time_sec": to_float(
+            aggregate.get("total_tuning_time_sec", aggregate.get("totalTuningTimeSec"))
+        ),
+        "total_trials": to_int(aggregate.get("total_trials", aggregate.get("totalTrials"))),
+        "latency_retention": to_float(
+            aggregate.get("latency_retention", aggregate.get("latencyRetention"))
+        ),
+        "time_reduction": to_float(aggregate.get("time_reduction", aggregate.get("timeReduction"))),
+        "trial_reduction": to_float(
+            aggregate.get("trial_reduction", aggregate.get("trialReduction"))
+        ),
+        "score": to_float(aggregate.get("score")),
+        "metadata": metadata,
+        "latest_pruning_run": latest_pruning_run,
+        "experiment": entry,
+        "metadata_json": metadata_json,
+        "latest_pruning_run_json": latest_pruning_run_json,
+        "experiment_json": experiment_json,
+    }, None
+
+
 def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[str]]:
     if not path.exists():
         return [], [f"File not found: {path}"]
@@ -238,12 +392,65 @@ def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[s
         payload = json.loads(path.read_text())
     except json.JSONDecodeError as exc:
         return [], [f"Invalid JSON: {exc}"]
-    if not isinstance(payload, list):
-        return [], ["Results file must contain a JSON array"]
 
     rows: List[Dict[str, Any]] = []
     errors: List[str] = []
     seen: set[Tuple[Any, ...]] = set()
+
+    if dataset == DATASET_BEST_PRUNED:
+        if not isinstance(payload, dict):
+            return [], ["best_pruned_config file must contain a JSON object"]
+        normalized, error = normalize_best_pruned_config_payload(payload)
+        if error:
+            return [], [error]
+        rows.append(normalized)
+        return rows, errors
+
+    if dataset == DATASET_PRUNING:
+        if isinstance(payload, list):
+            experiments = payload
+            metadata: Dict[str, Any] = {}
+            latest_pruning_run: Dict[str, Any] = {}
+        elif isinstance(payload, dict):
+            experiments_raw = payload.get("experiments")
+            if isinstance(experiments_raw, list):
+                experiments = experiments_raw
+            else:
+                experiments = [payload]
+
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            latest_pruning_run = (
+                payload.get("latest_pruning_run")
+                if isinstance(payload.get("latest_pruning_run"), dict)
+                else {}
+            )
+        else:
+            return [], ["pruning_experiments file must contain a JSON object or array"]
+
+        for idx, entry in enumerate(experiments):
+            if not isinstance(entry, dict):
+                errors.append(f"Entry {idx}: not an object")
+                continue
+
+            normalized, error = normalize_pruning_experiment_entry(
+                entry,
+                metadata=metadata,
+                latest_pruning_run=latest_pruning_run,
+            )
+            if error:
+                errors.append(f"Entry {idx}: {error}")
+                continue
+
+            key = (normalized["run_id"],)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(normalized)
+
+        return rows, errors
+
+    if not isinstance(payload, list):
+        return [], ["Results file must contain a JSON array"]
 
     for idx, entry in enumerate(payload):
         if not isinstance(entry, dict):
@@ -272,7 +479,7 @@ def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[s
                 normalized["iteration"],
                 normalized["total_iterations"],
             )
-        else:
+        elif dataset == DATASET_BEST:
             normalized, error = normalize_best_schedule_entry(entry)
             if error:
                 errors.append(f"Entry {idx}: {error}")
@@ -287,6 +494,10 @@ def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[s
                 normalized["trace"],
                 normalized["decisions_json"],
             )
+
+        else:
+            errors.append(f"Unsupported dataset: {dataset}")
+            continue
 
         if key in seen:
             continue
@@ -348,15 +559,63 @@ def run_api_import(
         uploader = upload_results
         default_url = DEFAULT_BERT_API_URL
         env_url = "DATA_AGGREGATOR_URL"
-    else:
+
+        total = 0
+        for chunk in chunk_rows(rows, chunk_size):
+            ok = uploader(
+                chunk,
+                url=api_url,
+                profile=profile,
+                dedupe=dedupe,
+                timeout=timeout,
+            )
+            if not ok:
+                effective_url = api_url or os.environ.get(env_url, default_url)
+                print(
+                    f"Upload failed after {total} rows. "
+                    f"Check {env_url} ({effective_url}) and that the server is running."
+                )
+                return 1
+            total += len(chunk)
+
+        print(f"Uploaded {total} rows via data_aggregator API.")
+        return 0
+
+    if dataset == DATASET_BEST:
         uploader = upload_best_schedules
         default_url = DEFAULT_BEST_SCHEDULES_API_URL
         env_url = "DATA_AGGREGATOR_BEST_SCHEDULES_URL"
 
-    total = 0
-    for chunk in chunk_rows(rows, chunk_size):
-        ok = uploader(
-            chunk,
+        total = 0
+        for chunk in chunk_rows(rows, chunk_size):
+            ok = uploader(
+                chunk,
+                url=api_url,
+                profile=profile,
+                dedupe=dedupe,
+                timeout=timeout,
+            )
+            if not ok:
+                effective_url = api_url or os.environ.get(env_url, default_url)
+                print(
+                    f"Upload failed after {total} rows. "
+                    f"Check {env_url} ({effective_url}) and that the server is running."
+                )
+                return 1
+            total += len(chunk)
+
+        print(f"Uploaded {total} rows via data_aggregator API.")
+        return 0
+
+    if dataset == DATASET_BEST_PRUNED:
+        default_url = DEFAULT_BEST_PRUNED_CONFIG_API_URL
+        env_url = "DATA_AGGREGATOR_BEST_PRUNED_CONFIG_URL"
+        payload = rows[0].get("payload") if rows else None
+        if not isinstance(payload, dict):
+            print("No valid best_pruned_config payload to upload.")
+            return 1
+        ok = upload_best_pruned_config(
+            payload,
             url=api_url,
             profile=profile,
             dedupe=dedupe,
@@ -365,14 +624,47 @@ def run_api_import(
         if not ok:
             effective_url = api_url or os.environ.get(env_url, default_url)
             print(
-                f"Upload failed after {total} rows. "
+                "Upload failed. "
                 f"Check {env_url} ({effective_url}) and that the server is running."
             )
             return 1
-        total += len(chunk)
+        print("Uploaded 1 row via data_aggregator API.")
+        return 0
 
-    print(f"Uploaded {total} rows via data_aggregator API.")
-    return 0
+    if dataset == DATASET_PRUNING:
+        default_url = DEFAULT_PRUNING_EXPERIMENTS_API_URL
+        env_url = "DATA_AGGREGATOR_PRUNING_EXPERIMENTS_URL"
+
+        total = 0
+        for chunk in chunk_rows(rows, chunk_size):
+            metadata = chunk[0].get("metadata", {}) if chunk else {}
+            latest = chunk[0].get("latest_pruning_run", {}) if chunk else {}
+            payload = {
+                "metadata": metadata if isinstance(metadata, dict) else {},
+                "latest_pruning_run": latest if isinstance(latest, dict) else {},
+                "experiments": [row.get("experiment", {}) for row in chunk],
+            }
+            ok = upload_pruning_experiments(
+                payload,
+                url=api_url,
+                profile=profile,
+                dedupe=dedupe,
+                timeout=timeout,
+            )
+            if not ok:
+                effective_url = api_url or os.environ.get(env_url, default_url)
+                print(
+                    f"Upload failed after {total} rows. "
+                    f"Check {env_url} ({effective_url}) and that the server is running."
+                )
+                return 1
+            total += len(chunk)
+
+        print(f"Uploaded {total} rows via data_aggregator API.")
+        return 0
+
+    print(f"Unsupported dataset: {dataset}")
+    return 1
 
 
 def qident(name: str) -> str:
@@ -469,54 +761,165 @@ def ensure_direct_table(cur: Any, dataset: str, profile: str, table_name: str) -
         )
         return
 
-    suffix = BEST_SCHEDULES_TABLE_SUFFIX
-    rename_legacy_tables(cur, profile, suffix, table_name)
-    cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
-    cur.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {qident(table_name)} (
-            id uuid primary key default gen_random_uuid(),
-            ingested_at timestamptz not null default now(),
-            kernel text not null,
-            m integer not null,
-            k integer not null,
-            n integer not null,
-            latency_us double precision not null,
-            std_us double precision not null,
-            trace text not null,
-            decisions jsonb not null default '[]'::jsonb
+    if dataset == DATASET_BEST:
+        suffix = BEST_SCHEDULES_TABLE_SUFFIX
+        rename_legacy_tables(cur, profile, suffix, table_name)
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {qident(table_name)} (
+                id uuid primary key default gen_random_uuid(),
+                ingested_at timestamptz not null default now(),
+                kernel text not null,
+                m integer not null,
+                k integer not null,
+                n integer not null,
+                latency_us double precision not null,
+                std_us double precision not null,
+                trace text not null,
+                decisions jsonb not null default '[]'::jsonb
+            )
+            """
         )
-        """
-    )
 
-    index_key = f"{table_key(profile)}_{suffix}"
-    idx_kernel_shape = clamp_identifier(f"idx_{index_key}_kernel_shape")
-    idx_latency = clamp_identifier(f"idx_{index_key}_latency")
-    uniq_row = clamp_identifier(f"uniq_{index_key}_row")
+        index_key = f"{table_key(profile)}_{suffix}"
+        idx_kernel_shape = clamp_identifier(f"idx_{index_key}_kernel_shape")
+        idx_latency = clamp_identifier(f"idx_{index_key}_latency")
+        uniq_row = clamp_identifier(f"uniq_{index_key}_row")
 
-    cur.execute(
-        f"CREATE INDEX IF NOT EXISTS {qident(idx_kernel_shape)} "
-        f"ON {qident(table_name)} (kernel, m, k, n)"
-    )
-    cur.execute(
-        f"CREATE INDEX IF NOT EXISTS {qident(idx_latency)} "
-        f"ON {qident(table_name)} (latency_us)"
-    )
-    cur.execute(
-        f"""
-        CREATE UNIQUE INDEX IF NOT EXISTS {qident(uniq_row)}
-        ON {qident(table_name)} (
-            kernel,
-            m,
-            k,
-            n,
-            latency_us,
-            std_us,
-            trace,
-            decisions
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_kernel_shape)} "
+            f"ON {qident(table_name)} (kernel, m, k, n)"
         )
-        """
-    )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_latency)} "
+            f"ON {qident(table_name)} (latency_us)"
+        )
+        cur.execute(
+            f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS {qident(uniq_row)}
+            ON {qident(table_name)} (
+                kernel,
+                m,
+                k,
+                n,
+                latency_us,
+                std_us,
+                trace,
+                decisions
+            )
+            """
+        )
+        return
+
+    if dataset == DATASET_BEST_PRUNED:
+        suffix = BEST_PRUNED_CONFIG_TABLE_SUFFIX
+        rename_legacy_tables(cur, profile, suffix, table_name)
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {qident(table_name)} (
+                id uuid primary key default gen_random_uuid(),
+                ingested_at timestamptz not null default now(),
+                ts timestamptz not null,
+                target text not null default '',
+                selected_config_name text not null,
+                selected_state_token text not null default '',
+                selection_reason text not null default '',
+                latency_retention double precision,
+                time_reduction double precision,
+                trial_reduction double precision,
+                score double precision,
+                payload_hash text not null,
+                payload jsonb not null
+            )
+            """
+        )
+
+        index_key = f"{table_key(profile)}_{suffix}"
+        idx_ts = clamp_identifier(f"idx_{index_key}_ts")
+        idx_cfg = clamp_identifier(f"idx_{index_key}_config")
+        idx_score = clamp_identifier(f"idx_{index_key}_score")
+        uniq_hash = clamp_identifier(f"uniq_{index_key}_payload_hash")
+
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_ts)} "
+            f"ON {qident(table_name)} (ts)"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_cfg)} "
+            f"ON {qident(table_name)} (selected_config_name)"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_score)} "
+            f"ON {qident(table_name)} (score)"
+        )
+        cur.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {qident(uniq_hash)} "
+            f"ON {qident(table_name)} (payload_hash)"
+        )
+        return
+
+    if dataset == DATASET_PRUNING:
+        suffix = PRUNING_EXPERIMENTS_TABLE_SUFFIX
+        rename_legacy_tables(cur, profile, suffix, table_name)
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {qident(table_name)} (
+                id uuid primary key default gen_random_uuid(),
+                ingested_at timestamptz not null default now(),
+                run_id text not null,
+                ts timestamptz not null,
+                mode text not null,
+                iteration integer not null,
+                config_name text not null,
+                config_hash text not null,
+                tasks_signature text not null default '',
+                is_baseline boolean not null default false,
+                benchmark_only boolean not null default false,
+                num_tasks integer,
+                num_successful_tasks integer,
+                all_tasks_succeeded boolean,
+                latency_geomean_us double precision,
+                total_tuning_time_sec double precision,
+                total_trials integer,
+                latency_retention double precision,
+                time_reduction double precision,
+                trial_reduction double precision,
+                score double precision,
+                metadata jsonb not null default '{{}}'::jsonb,
+                latest_pruning_run jsonb not null default '{{}}'::jsonb,
+                experiment jsonb not null
+            )
+            """
+        )
+
+        index_key = f"{table_key(profile)}_{suffix}"
+        idx_ts = clamp_identifier(f"idx_{index_key}_ts")
+        idx_cfg_iter = clamp_identifier(f"idx_{index_key}_cfg_iter")
+        idx_score = clamp_identifier(f"idx_{index_key}_score")
+        uniq_run_id = clamp_identifier(f"uniq_{index_key}_run_id")
+
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_ts)} "
+            f"ON {qident(table_name)} (ts)"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_cfg_iter)} "
+            f"ON {qident(table_name)} (config_name, iteration)"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_score)} "
+            f"ON {qident(table_name)} (score)"
+        )
+        cur.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {qident(uniq_run_id)} "
+            f"ON {qident(table_name)} (run_id)"
+        )
+        return
+
+    raise ValueError(f"Unsupported dataset: {dataset}")
 
 
 def run_direct_import_bert(
@@ -718,6 +1121,204 @@ def run_direct_import_best_schedules(
     return 0
 
 
+def run_direct_import_best_pruned_config(
+    rows: List[Dict[str, Any]],
+    db_url: str,
+    table_name: str,
+    profile: str,
+    chunk_size: int,
+    dedupe: bool,
+) -> int:
+    try:
+        import psycopg
+    except ImportError:
+        print("psycopg is required. Install with: pip install psycopg[binary]")
+        return 1
+
+    select_sql = f"""
+        SELECT 1
+        FROM {qident(table_name)}
+        WHERE payload_hash = %(payload_hash)s
+        LIMIT 1
+    """
+
+    insert_sql = f"""
+        INSERT INTO {qident(table_name)} (
+            ts,
+            target,
+            selected_config_name,
+            selected_state_token,
+            selection_reason,
+            latency_retention,
+            time_reduction,
+            trial_reduction,
+            score,
+            payload_hash,
+            payload
+        )
+        VALUES (
+            %(ts)s,
+            %(target)s,
+            %(selected_config_name)s,
+            %(selected_state_token)s,
+            %(selection_reason)s,
+            %(latency_retention)s,
+            %(time_reduction)s,
+            %(trial_reduction)s,
+            %(score)s,
+            %(payload_hash)s,
+            %(payload_json)s::jsonb
+        )
+    """
+
+    inserted = 0
+    skipped = 0
+    pending: List[Dict[str, Any]] = []
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                ensure_direct_table(cur, DATASET_BEST_PRUNED, profile, table_name)
+                conn.commit()
+
+                for row in rows:
+                    if dedupe:
+                        cur.execute(select_sql, row)
+                        if cur.fetchone():
+                            skipped += 1
+                            continue
+
+                    pending.append(row)
+                    if len(pending) >= chunk_size:
+                        cur.executemany(insert_sql, pending)
+                        conn.commit()
+                        inserted += len(pending)
+                        pending.clear()
+
+                if pending:
+                    cur.executemany(insert_sql, pending)
+                    conn.commit()
+                    inserted += len(pending)
+    except psycopg.OperationalError as exc:
+        print(f"Connection failed: {exc}")
+        if "sslrootcert" in str(exc) or "certificate" in str(exc):
+            print("Hint: try --sslmode=require (Neon default) or --sslrootcert=system.")
+        return 1
+
+    print(f"Imported {inserted} rows. Skipped {skipped} duplicates.")
+    return 0
+
+
+def run_direct_import_pruning_experiments(
+    rows: List[Dict[str, Any]],
+    db_url: str,
+    table_name: str,
+    profile: str,
+    chunk_size: int,
+    dedupe: bool,
+) -> int:
+    try:
+        import psycopg
+    except ImportError:
+        print("psycopg is required. Install with: pip install psycopg[binary]")
+        return 1
+
+    select_sql = f"""
+        SELECT 1
+        FROM {qident(table_name)}
+        WHERE run_id = %(run_id)s
+        LIMIT 1
+    """
+
+    insert_sql = f"""
+        INSERT INTO {qident(table_name)} (
+            run_id,
+            ts,
+            mode,
+            iteration,
+            config_name,
+            config_hash,
+            tasks_signature,
+            is_baseline,
+            benchmark_only,
+            num_tasks,
+            num_successful_tasks,
+            all_tasks_succeeded,
+            latency_geomean_us,
+            total_tuning_time_sec,
+            total_trials,
+            latency_retention,
+            time_reduction,
+            trial_reduction,
+            score,
+            metadata,
+            latest_pruning_run,
+            experiment
+        )
+        VALUES (
+            %(run_id)s,
+            %(ts)s,
+            %(mode)s,
+            %(iteration)s,
+            %(config_name)s,
+            %(config_hash)s,
+            %(tasks_signature)s,
+            %(is_baseline)s,
+            %(benchmark_only)s,
+            %(num_tasks)s,
+            %(num_successful_tasks)s,
+            %(all_tasks_succeeded)s,
+            %(latency_geomean_us)s,
+            %(total_tuning_time_sec)s,
+            %(total_trials)s,
+            %(latency_retention)s,
+            %(time_reduction)s,
+            %(trial_reduction)s,
+            %(score)s,
+            %(metadata_json)s::jsonb,
+            %(latest_pruning_run_json)s::jsonb,
+            %(experiment_json)s::jsonb
+        )
+    """
+
+    inserted = 0
+    skipped = 0
+    pending: List[Dict[str, Any]] = []
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                ensure_direct_table(cur, DATASET_PRUNING, profile, table_name)
+                conn.commit()
+
+                for row in rows:
+                    if dedupe:
+                        cur.execute(select_sql, row)
+                        if cur.fetchone():
+                            skipped += 1
+                            continue
+
+                    pending.append(row)
+                    if len(pending) >= chunk_size:
+                        cur.executemany(insert_sql, pending)
+                        conn.commit()
+                        inserted += len(pending)
+                        pending.clear()
+
+                if pending:
+                    cur.executemany(insert_sql, pending)
+                    conn.commit()
+                    inserted += len(pending)
+    except psycopg.OperationalError as exc:
+        print(f"Connection failed: {exc}")
+        if "sslrootcert" in str(exc) or "certificate" in str(exc):
+            print("Hint: try --sslmode=require (Neon default) or --sslrootcert=system.")
+        return 1
+
+    print(f"Imported {inserted} rows. Skipped {skipped} duplicates.")
+    return 0
+
+
 def resolve_profile(cli_profile: Optional[str]) -> str:
     if cli_profile:
         return cli_profile
@@ -794,7 +1395,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Import benchmark JSON files into Neon with profile-specific tables. "
-            "Commands: bert-matmul | best-schedules"
+            "Commands: bert-matmul | best-schedules | best-pruned-config | pruning-experiments"
         )
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -810,6 +1411,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Import research/results/metaschedule/best_schedules.json",
     )
     add_common_args(best_parser, DEFAULT_BEST_SCHEDULES)
+
+    best_pruned_parser = subparsers.add_parser(
+        DATASET_BEST_PRUNED,
+        help="Import research/results/metaschedule/best_pruned_config.json",
+    )
+    add_common_args(best_pruned_parser, DEFAULT_BEST_PRUNED_CONFIG)
+
+    pruning_parser = subparsers.add_parser(
+        DATASET_PRUNING,
+        help="Import research/results/metaschedule/pruning_experiments.json",
+    )
+    add_common_args(pruning_parser, DEFAULT_PRUNING_EXPERIMENTS)
 
     return parser
 
@@ -888,15 +1501,41 @@ def main() -> int:
             dedupe=not args.no_dedupe,
         )
 
-    table_name = profile_table_name(normalized_profile, BEST_SCHEDULES_TABLE_SUFFIX)
-    return run_direct_import_best_schedules(
-        rows,
-        db_url=db_url,
-        table_name=table_name,
-        profile=normalized_profile,
-        chunk_size=args.chunk_size,
-        dedupe=not args.no_dedupe,
-    )
+    if dataset == DATASET_BEST:
+        table_name = profile_table_name(normalized_profile, BEST_SCHEDULES_TABLE_SUFFIX)
+        return run_direct_import_best_schedules(
+            rows,
+            db_url=db_url,
+            table_name=table_name,
+            profile=normalized_profile,
+            chunk_size=args.chunk_size,
+            dedupe=not args.no_dedupe,
+        )
+
+    if dataset == DATASET_BEST_PRUNED:
+        table_name = profile_table_name(normalized_profile, BEST_PRUNED_CONFIG_TABLE_SUFFIX)
+        return run_direct_import_best_pruned_config(
+            rows,
+            db_url=db_url,
+            table_name=table_name,
+            profile=normalized_profile,
+            chunk_size=args.chunk_size,
+            dedupe=not args.no_dedupe,
+        )
+
+    if dataset == DATASET_PRUNING:
+        table_name = profile_table_name(normalized_profile, PRUNING_EXPERIMENTS_TABLE_SUFFIX)
+        return run_direct_import_pruning_experiments(
+            rows,
+            db_url=db_url,
+            table_name=table_name,
+            profile=normalized_profile,
+            chunk_size=args.chunk_size,
+            dedupe=not args.no_dedupe,
+        )
+
+    print(f"Unsupported dataset: {dataset}")
+    return 1
 
 
 if __name__ == "__main__":

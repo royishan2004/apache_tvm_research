@@ -91,6 +91,8 @@ Each `profile` (CPU model) maps to its own table for each dataset:
 ```
 <profile_key>_bert_matmul_results
 <profile_key>_best_schedules
+<profile_key>_best_pruned_config
+<profile_key>_pruning_experiments
 ```
 
 Notes:
@@ -104,11 +106,17 @@ Notes:
 - On the first upload for the default profile, any existing `bert_matmul_results` table is renamed to the profile table.
 - Legacy tables named `<profile> - bert_matmul_results` are renamed to the new `<profile_key>_bert_matmul_results` form.
 - Legacy tables named `<profile> - best_schedules` are renamed to the new `<profile_key>_best_schedules` form.
+- Legacy tables named `<profile> - best_pruned_config` are renamed to the new `<profile_key>_best_pruned_config` form.
+- Legacy tables named `<profile> - pruning_experiments` are renamed to the new `<profile_key>_pruning_experiments` form.
 
 
 #### Upload via Scalar Docs
 1) Open http://localhost:3000/docs  
-2) Find either `POST /api/upload/bert_matmul_results` or `POST /api/upload/best_schedules`  
+2) Find one of:
+  - `POST /api/upload/bert_matmul_results`
+  - `POST /api/upload/best_schedules`
+  - `POST /api/upload/best_pruned_config`
+  - `POST /api/upload/pruning_experiments`
 3) Click “Try it”, choose your `file`, set `profile` if needed, then “Execute”
 
 > Try it out ↓
@@ -121,6 +129,14 @@ curl -X POST http://localhost:3000/api/upload/bert_matmul_results \
 curl -X POST http://localhost:3000/api/upload/best_schedules \
   -F "profile=i7-13700" \
   -F "file=@/path/to/best_schedules.json"
+
+curl -X POST http://localhost:3000/api/upload/best_pruned_config \
+  -F "profile=i7-13700" \
+  -F "file=@/path/to/best_pruned_config.json"
+
+curl -X POST http://localhost:3000/api/upload/pruning_experiments \
+  -F "profile=i7-13700" \
+  -F "file=@/path/to/pruning_experiments.json"
 ```
 
 

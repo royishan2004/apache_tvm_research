@@ -20,6 +20,8 @@ PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9 _-]+$")
 _CACHED_PROFILE: Optional[str] = None
 DEFAULT_DATA_AGGREGATOR_URL = "http://localhost:3000/api/upload/bert_matmul_results"
 DEFAULT_BEST_SCHEDULES_URL = "http://localhost:3000/api/upload/best_schedules"
+DEFAULT_BEST_PRUNED_CONFIG_URL = "http://localhost:3000/api/upload/best_pruned_config"
+DEFAULT_PRUNING_EXPERIMENTS_URL = "http://localhost:3000/api/upload/pruning_experiments"
 
 
 def upload_results(
@@ -39,8 +41,8 @@ def upload_results(
     """
     if url is None:
         url = os.environ.get("DATA_AGGREGATOR_URL", DEFAULT_DATA_AGGREGATOR_URL)
-    return _upload_entries(
-        entries,
+    return _upload_payload(
+        list(entries),
         url=url,
         profile=profile,
         dedupe=dedupe,
@@ -69,8 +71,8 @@ def upload_best_schedules(
             "DATA_AGGREGATOR_BEST_SCHEDULES_URL",
             DEFAULT_BEST_SCHEDULES_URL,
         )
-    return _upload_entries(
-        entries,
+    return _upload_payload(
+        list(entries),
         url=url,
         profile=profile,
         dedupe=dedupe,
@@ -79,8 +81,54 @@ def upload_best_schedules(
     )
 
 
-def _upload_entries(
-    entries: Iterable[Dict[str, Any]],
+def upload_best_pruned_config(
+    payload: Dict[str, Any],
+    url: Optional[str] = None,
+    profile: Optional[str] = None,
+    dedupe: bool = False,
+    timeout: Optional[int] = None,
+) -> bool:
+    """Upload best_pruned_config payload to the data aggregator."""
+    if url is None:
+        url = os.environ.get(
+            "DATA_AGGREGATOR_BEST_PRUNED_CONFIG_URL",
+            DEFAULT_BEST_PRUNED_CONFIG_URL,
+        )
+    return _upload_payload(
+        payload,
+        url=url,
+        profile=profile,
+        dedupe=dedupe,
+        timeout=timeout,
+        payload_filename="best_pruned_config.json",
+    )
+
+
+def upload_pruning_experiments(
+    payload: Any,
+    url: Optional[str] = None,
+    profile: Optional[str] = None,
+    dedupe: bool = False,
+    timeout: Optional[int] = None,
+) -> bool:
+    """Upload pruning_experiments payload to the data aggregator."""
+    if url is None:
+        url = os.environ.get(
+            "DATA_AGGREGATOR_PRUNING_EXPERIMENTS_URL",
+            DEFAULT_PRUNING_EXPERIMENTS_URL,
+        )
+    return _upload_payload(
+        payload,
+        url=url,
+        profile=profile,
+        dedupe=dedupe,
+        timeout=timeout,
+        payload_filename="pruning_experiments.json",
+    )
+
+
+def _upload_payload(
+    payload: Any,
     *,
     url: str,
     profile: Optional[str],
@@ -94,8 +142,9 @@ def _upload_entries(
     resolved_profile = resolve_profile(profile)
     resolved_timeout = _resolve_timeout(timeout)
 
-    payload = list(entries)
-    if not payload:
+    if payload is None:
+        return False
+    if isinstance(payload, (list, tuple, set, dict)) and not payload:
         return False
 
     fields = {"profile": resolved_profile}
@@ -274,6 +323,8 @@ def _looks_like_data_aggregator_response(probe_url: str, raw_body: str) -> bool:
             title == "apache tvm research aggregator"
             and "/api/upload/bert_matmul_results" in paths
             and "/api/upload/best_schedules" in paths
+            and "/api/upload/best_pruned_config" in paths
+            and "/api/upload/pruning_experiments" in paths
         )
 
     return body == "Healthy!"
