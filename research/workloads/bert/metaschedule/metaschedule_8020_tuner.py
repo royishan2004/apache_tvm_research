@@ -208,6 +208,21 @@ class TaskSpec:
 	size_bucket: str
 
 
+@dataclass
+class RunProgressTracker:
+	planned_runs: int = 0
+	completed_runs: int = 0
+
+	def register_config_runs(self, num_tasks: int) -> None:
+		self.planned_runs += max(0, int(num_tasks))
+
+	def next_run_index(self) -> int:
+		return self.completed_runs + 1
+
+	def mark_run_completed(self) -> None:
+		self.completed_runs += 1
+
+
 def _utc_now() -> str:
 	return datetime.now(timezone.utc).isoformat()
 
@@ -1086,6 +1101,7 @@ def _evaluate_config(
 	force_rerun: bool,
 	is_baseline: bool,
 	persist_best_schedules: bool,
+	run_tracker: RunProgressTracker,
 	profile: str,
 ) -> Dict[str, Any]:
 	config_hash = _config_hash(config)
@@ -1112,16 +1128,34 @@ def _evaluate_config(
 	)
 
 	task_results: List[Dict[str, Any]] = []
-	for task in tasks:
+	total_runs = len(tasks)
+	run_tracker.register_config_runs(total_runs)
+	for run_idx, task in enumerate(tasks, start=1):
+		remaining_runs = total_runs - run_idx
+		global_run_idx = run_tracker.next_run_index()
+		global_remaining = max(0, run_tracker.planned_runs - global_run_idx)
+		LOGGER.info("\n%s", "#" * 120)
 		LOGGER.info(
-			"\n{'#' * 120}\nTask: kernel=%s M=%d K=%d N=%d bucket=%s",
+			"Run %d/%d (%d remaining) | global %d/%d (%d remaining) | iteration=%d | mode=%s | config=%s",
+			run_idx,
+			total_runs,
+			remaining_runs,
+			global_run_idx,
+			run_tracker.planned_runs,
+			global_remaining,
+			iteration,
+			mode_label,
+			config.name,
+		)
+		LOGGER.info(
+			"Task: kernel=%s M=%d K=%d N=%d bucket=%s",
 			task.kernel,
 			task.M,
 			task.K,
 			task.N,
 			task.size_bucket,
-            "\n{'#' * 120}\n",
 		)
+		LOGGER.info("%s\n", "#" * 120)
 		task_result = _run_single_task(
 			task=task,
 			config=config,
@@ -1133,6 +1167,7 @@ def _evaluate_config(
 			persist_best_schedules=persist_best_schedules,
 			profile=profile,
 		)
+		run_tracker.mark_run_completed()
 		task_results.append(task_result)
 
 	aggregate = _aggregate_metrics(
@@ -1283,6 +1318,7 @@ def _run_pruning_iteration(
 	args: argparse.Namespace,
 	history_stats: Dict[str, Any],
 	store: Dict[str, Any],
+	run_tracker: RunProgressTracker,
 	profile: str,
 ) -> Dict[str, Any]:
 	baseline_state = PruningState()
@@ -1301,6 +1337,7 @@ def _run_pruning_iteration(
 		force_rerun=args.force_rerun,
 		is_baseline=True,
 		persist_best_schedules=False,
+		run_tracker=run_tracker,
 		profile=profile,
 	)
 
@@ -1321,8 +1358,19 @@ def _run_pruning_iteration(
 
 		LOGGER.info("Pruning step %d: evaluating %d neighboring states", step, len(candidates))
 		step_results: List[Tuple[PruningState, Dict[str, Any]]] = []
-		for state in candidates:
+		total_candidates = len(candidates)
+		for candidate_idx, state in enumerate(candidates, start=1):
+			remaining_candidates = total_candidates - candidate_idx
 			config = _state_to_config(state)
+			LOGGER.info(
+				"Pruning candidate %d/%d (%d remaining) | step=%d | state=%s | config=%s",
+				candidate_idx,
+				total_candidates,
+				remaining_candidates,
+				step,
+				state.token(),
+				config.name,
+			)
 			exp = _evaluate_config(
 				mode_label="pruning",
 				iteration=iteration,
@@ -1336,6 +1384,7 @@ def _run_pruning_iteration(
 				force_rerun=args.force_rerun,
 				is_baseline=False,
 				persist_best_schedules=False,
+				run_tracker=run_tracker,
 				profile=profile,
 			)
 			evaluated.append(exp)
@@ -1478,6 +1527,7 @@ def _persist_best_schedules_for_selection(
 	args: argparse.Namespace,
 	history_stats: Dict[str, Any],
 	store: Dict[str, Any],
+	run_tracker: RunProgressTracker,
 	profile: str,
 ) -> None:
 	config = _config_from_dict(selected_experiment["config"])
@@ -1501,6 +1551,7 @@ def _persist_best_schedules_for_selection(
 		force_rerun=True,
 		is_baseline=False,
 		persist_best_schedules=True,
+		run_tracker=run_tracker,
 		profile=profile,
 	)
 
@@ -1511,6 +1562,7 @@ def _run_compare_mode(
 	args: argparse.Namespace,
 	history_stats: Dict[str, Any],
 	store: Dict[str, Any],
+	run_tracker: RunProgressTracker,
 	profile: str,
 ) -> Dict[str, Any]:
 	baseline_config = _state_to_config(PruningState())
@@ -1536,6 +1588,7 @@ def _run_compare_mode(
 		force_rerun=args.force_rerun,
 		is_baseline=True,
 		persist_best_schedules=False,
+		run_tracker=run_tracker,
 		profile=profile,
 	)
 
@@ -1552,6 +1605,7 @@ def _run_compare_mode(
 		force_rerun=args.force_rerun,
 		is_baseline=False,
 		persist_best_schedules=False,
+		run_tracker=run_tracker,
 		profile=profile,
 	)
 
@@ -1648,6 +1702,7 @@ def main() -> int:
 	LOGGER.info("Loaded %d historical best schedules for heuristic biasing", history_stats.get("num_records", 0))
 
 	store = _load_json(PRUNING_EXPERIMENTS_FILE, default={"metadata": {}, "experiments": []})
+	run_tracker = RunProgressTracker()
 	store.setdefault("metadata", {})
 	store["metadata"].update(
 		{
@@ -1664,6 +1719,7 @@ def main() -> int:
 			args=args,
 			history_stats=history_stats,
 			store=store,
+			run_tracker=run_tracker,
 			profile=profile,
 		)
 		_write_json(PRUNING_EXPERIMENTS_FILE, store)
@@ -1690,6 +1746,7 @@ def main() -> int:
 			args=args,
 			history_stats=history_stats,
 			store=store,
+			run_tracker=run_tracker,
 			profile=profile,
 		)
 		iteration_outputs.append(out)
@@ -1714,6 +1771,7 @@ def main() -> int:
 		args=args,
 		history_stats=history_stats,
 		store=store,
+		run_tracker=run_tracker,
 		profile=profile,
 	)
 
