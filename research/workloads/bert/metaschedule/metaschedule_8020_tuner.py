@@ -1311,6 +1311,22 @@ def _config_from_dict(raw: Dict[str, Any]) -> TuningConfig:
 	return TuningConfig(**merged)
 
 
+def _extract_saved_pruned_config(best_cfg_payload: Dict[str, Any]) -> Optional[TuningConfig]:
+	if not isinstance(best_cfg_payload, dict):
+		return None
+
+	config_payload = best_cfg_payload.get("config")
+	if isinstance(config_payload, dict):
+		return _config_from_dict(config_payload)
+
+	# Newer payloads persist this key name.
+	selected_config_payload = best_cfg_payload.get("selected_config")
+	if isinstance(selected_config_payload, dict):
+		return _config_from_dict(selected_config_payload)
+
+	return None
+
+
 def _run_pruning_iteration(
 	*,
 	iteration: int,
@@ -1568,12 +1584,13 @@ def _run_compare_mode(
 	baseline_config = _state_to_config(PruningState())
 
 	best_cfg_payload = _load_json(args.best_config_path, default={})
-	if not isinstance(best_cfg_payload, dict) or "config" not in best_cfg_payload:
+	pruned_config = _extract_saved_pruned_config(best_cfg_payload)
+	if pruned_config is None:
 		raise FileNotFoundError(
 			f"Unable to load pruned config from {args.best_config_path}. "
+			"Expected key `config` or `selected_config`. "
 			"Run pruning mode first to generate best_pruned_config.json"
 		)
-	pruned_config = _config_from_dict(best_cfg_payload["config"])
 
 	baseline_exp = _evaluate_config(
 		mode_label="compare",
