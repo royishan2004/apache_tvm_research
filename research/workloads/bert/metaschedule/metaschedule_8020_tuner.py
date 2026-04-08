@@ -22,6 +22,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+import sys
 
 import numpy as np
 import tvm
@@ -51,6 +52,7 @@ RESULTS_DIR = "research/results/metaschedule"
 BEST_SCHEDULES_FILE = os.path.join(RESULTS_DIR, "best_schedules.json")
 BEST_PRUNED_CONFIG_FILE = os.path.join(RESULTS_DIR, "best_pruned_config.json")
 PRUNING_EXPERIMENTS_FILE = os.path.join(RESULTS_DIR, "pruning_experiments.json")
+COMPARE_RESULTS_FILE = os.path.join(RESULTS_DIR, "comparison_results.json")
 LOG_FILE = os.path.join(WORK_DIR_BASE_DEFAULT, "metaschedule_8020_tuner.log")
 
 KERNELS = {
@@ -159,6 +161,37 @@ BREADTH_LEVELS = [
 
 
 LOGGER = logging.getLogger("metaschedule_8020_tuner")
+
+# Color support: enable when stdout is a tty. Logs may still include codes if handler
+# writes to the same stream; this keeps colors off in non-interactive runs.
+COLOR_ENABLED = sys.stdout.isatty()
+_ANSI_GREEN = "\x1b[32m"
+_ANSI_RED = "\x1b[31m"
+_ANSI_RESET = "\x1b[0m"
+
+
+def _maybe_color(text: str, good: Optional[bool]) -> str:
+	if not COLOR_ENABLED or good is None:
+		return text
+	return f"{_ANSI_GREEN}{text}{_ANSI_RESET}" if good else f"{_ANSI_RED}{text}{_ANSI_RESET}"
+
+
+# Regex for stripping ANSI escape sequences when computing visible widths
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(s: str) -> str:
+	return _ANSI_RE.sub("", s)
+
+
+def _visible_len(s: str) -> int:
+	return len(_strip_ansi(s))
+
+
+def _arrow_prefix(good: Optional[bool]) -> str:
+	if good is None:
+		return "→ "
+	return "↑ " if good else "↓ "
 
 
 @dataclass(frozen=True)
@@ -1327,6 +1360,720 @@ def _extract_saved_pruned_config(best_cfg_payload: Dict[str, Any]) -> Optional[T
 	return None
 
 
+def _safe_latency_value(task_result: Dict[str, Any]) -> Optional[float]:
+	return _safe_metric_value(task_result, "latency_us")
+
+
+def _safe_metric_value(task_result: Dict[str, Any], key: str, allow_zero: bool = False) -> Optional[float]:
+	if task_result.get("status") != "ok":
+		return None
+	value_raw = task_result.get(key)
+	if value_raw is None:
+		return None
+	try:
+		value = float(value_raw)
+	except (TypeError, ValueError):
+		return None
+	if not math.isfinite(value):
+		return None
+	if allow_zero:
+		if value < 0.0:
+			return None
+		return value
+	if value <= 0.0:
+		return None
+	return value
+
+
+def _index_task_results(experiment: Dict[str, Any]) -> Dict[Tuple[str, int, int, int], Dict[str, Any]]:
+	index: Dict[Tuple[str, int, int, int], Dict[str, Any]] = {}
+	for row in experiment.get("task_results", []):
+		if not isinstance(row, dict):
+			continue
+		kernel = row.get("kernel")
+		if not isinstance(kernel, str):
+			continue
+		try:
+			m_val = int(row.get("M"))
+			k_val = int(row.get("K"))
+			n_val = int(row.get("N"))
+		except (TypeError, ValueError):
+			continue
+		index[(kernel, m_val, k_val, n_val)] = row
+	return index
+
+
+def _build_latency_comparison_rows(
+	baseline_experiment: Dict[str, Any],
+	candidate_experiment: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+	baseline_index = _index_task_results(baseline_experiment)
+	candidate_index = _index_task_results(candidate_experiment)
+	all_keys = sorted(
+		set(baseline_index.keys()) | set(candidate_index.keys()),
+		key=lambda item: (item[0], item[1], item[2], item[3]),
+	)
+
+	rows: List[Dict[str, Any]] = []
+	for kernel, m_val, k_val, n_val in all_keys:
+		baseline_task = baseline_index.get((kernel, m_val, k_val, n_val), {})
+		candidate_task = candidate_index.get((kernel, m_val, k_val, n_val), {})
+
+		baseline_latency = _safe_latency_value(baseline_task)
+		candidate_latency = _safe_latency_value(candidate_task)
+		baseline_exec_time = _safe_metric_value(baseline_task, "tuning_wall_time_sec")
+		candidate_exec_time = _safe_metric_value(candidate_task, "tuning_wall_time_sec")
+
+		baseline_trials = baseline_task.get("trials_new")
+		candidate_trials = candidate_task.get("trials_new")
+		if isinstance(baseline_trials, (int, float)):
+			baseline_trials = int(baseline_trials)
+		else:
+			baseline_trials = None
+		if isinstance(candidate_trials, (int, float)):
+			candidate_trials = int(candidate_trials)
+		else:
+			candidate_trials = None
+
+		retention = None
+		latency_delta_pct = None
+		if baseline_latency is not None and candidate_latency is not None and candidate_latency > 0.0:
+			retention = baseline_latency / candidate_latency
+			latency_delta_pct = ((candidate_latency - baseline_latency) / baseline_latency) * 100.0
+
+		exec_reduction = None
+		exec_delta_pct = None
+		if (
+			baseline_exec_time is not None
+			and candidate_exec_time is not None
+			and candidate_exec_time > 0.0
+			and baseline_exec_time > 0.0
+		):
+			exec_reduction = baseline_exec_time / candidate_exec_time
+			exec_delta_pct = ((candidate_exec_time - baseline_exec_time) / baseline_exec_time) * 100.0
+
+		trial_reduction = None
+		if (
+			baseline_trials is not None
+			and candidate_trials is not None
+			and baseline_trials > 0
+			and candidate_trials > 0
+		):
+			trial_reduction = float(baseline_trials) / float(candidate_trials)
+
+		rows.append(
+			{
+				"kernel": kernel,
+				"M": m_val,
+				"K": k_val,
+				"N": n_val,
+				"baseline_latency_us": (
+					round(float(baseline_latency), 6) if baseline_latency is not None else None
+				),
+				"candidate_latency_us": (
+					round(float(candidate_latency), 6) if candidate_latency is not None else None
+				),
+				"baseline_execution_time_sec": (
+					round(float(baseline_exec_time), 6) if baseline_exec_time is not None else None
+				),
+				"candidate_execution_time_sec": (
+					round(float(candidate_exec_time), 6) if candidate_exec_time is not None else None
+				),
+				"baseline_trials": baseline_trials,
+				"candidate_trials": candidate_trials,
+				"retention": round(float(retention), 6) if retention is not None else None,
+				"latency_delta_pct": (
+					round(float(latency_delta_pct), 6) if latency_delta_pct is not None else None
+				),
+				"execution_time_reduction": (
+					round(float(exec_reduction), 6) if exec_reduction is not None else None
+				),
+				"execution_time_delta_pct": (
+					round(float(exec_delta_pct), 6) if exec_delta_pct is not None else None
+				),
+				"trial_reduction": round(float(trial_reduction), 6) if trial_reduction is not None else None,
+				"baseline_status": str(baseline_task.get("status", "missing")),
+				"candidate_status": str(candidate_task.get("status", "missing")),
+			}
+		)
+	return rows
+
+
+def _build_kernel_latency_summaries(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+	by_kernel: Dict[str, Dict[str, List[float]]] = defaultdict(
+		lambda: {
+			"baseline_latency": [],
+			"candidate_latency": [],
+			"baseline_exec": [],
+			"candidate_exec": [],
+		}
+	)
+	for row in rows:
+		kernel = str(row.get("kernel", "unknown"))
+		baseline_latency = row.get("baseline_latency_us")
+		candidate_latency = row.get("candidate_latency_us")
+		baseline_exec = row.get("baseline_execution_time_sec")
+		candidate_exec = row.get("candidate_execution_time_sec")
+
+		if baseline_latency is not None and float(baseline_latency) > 0.0:
+			by_kernel[kernel]["baseline_latency"].append(float(baseline_latency))
+		if candidate_latency is not None and float(candidate_latency) > 0.0:
+			by_kernel[kernel]["candidate_latency"].append(float(candidate_latency))
+		if baseline_exec is not None and float(baseline_exec) > 0.0:
+			by_kernel[kernel]["baseline_exec"].append(float(baseline_exec))
+		if candidate_exec is not None and float(candidate_exec) > 0.0:
+			by_kernel[kernel]["candidate_exec"].append(float(candidate_exec))
+
+	summaries: List[Dict[str, Any]] = []
+	for kernel, values in sorted(by_kernel.items()):
+		baseline_latencies = values["baseline_latency"]
+		candidate_latencies = values["candidate_latency"]
+		baseline_execs = values["baseline_exec"]
+		candidate_execs = values["candidate_exec"]
+
+		if not baseline_latencies or not candidate_latencies:
+			continue
+
+		baseline_geomean = _geometric_mean(baseline_latencies)
+		candidate_geomean = _geometric_mean(candidate_latencies)
+		baseline_exec_total = float(sum(baseline_execs))
+		candidate_exec_total = float(sum(candidate_execs))
+		exec_reduction = (
+			baseline_exec_total / candidate_exec_total
+			if baseline_exec_total > 0.0 and candidate_exec_total > 0.0
+			else None
+		)
+		retention = (
+			baseline_geomean / candidate_geomean
+			if baseline_geomean > 0.0 and candidate_geomean > 0.0
+			else None
+		)
+		latency_delta_pct = (
+			((candidate_geomean - baseline_geomean) / baseline_geomean) * 100.0
+			if baseline_geomean > 0.0
+			else None
+		)
+		exec_delta_pct = (
+			((candidate_exec_total - baseline_exec_total) / baseline_exec_total) * 100.0
+			if baseline_exec_total > 0.0
+			else None
+		)
+		summaries.append({
+			"kernel": kernel,
+			"num_tasks": min(len(baseline_latencies), len(candidate_latencies)),
+			"baseline_geomean_us": round(float(baseline_geomean), 6),
+			"candidate_geomean_us": round(float(candidate_geomean), 6),
+			"baseline_execution_time_sec": round(float(baseline_exec_total), 6),
+			"candidate_execution_time_sec": round(float(candidate_exec_total), 6),
+			"retention": round(float(retention), 6) if retention is not None else None,
+			"latency_delta_pct": (
+				round(float(latency_delta_pct), 6) if latency_delta_pct is not None else None
+			),
+			"execution_time_reduction": (
+				round(float(exec_reduction), 6) if exec_reduction is not None else None
+			),
+			"execution_time_delta_pct": (
+				round(float(exec_delta_pct), 6) if exec_delta_pct is not None else None
+			),
+		})
+	return summaries
+
+
+def _build_overall_comparison_summary(
+	rows: Sequence[Dict[str, Any]],
+	baseline_total_tune_tir_time_sec: Optional[float],
+	candidate_total_tune_tir_time_sec: Optional[float],
+) -> Dict[str, Any]:
+	baseline_lat = [
+		float(r["baseline_latency_us"])
+		for r in rows
+		if r.get("baseline_latency_us") is not None and float(r["baseline_latency_us"]) > 0.0
+	]
+	candidate_lat = [
+		float(r["candidate_latency_us"])
+		for r in rows
+		if r.get("candidate_latency_us") is not None and float(r["candidate_latency_us"]) > 0.0
+	]
+	baseline_lat_gm = _geometric_mean(baseline_lat) if baseline_lat else None
+	candidate_lat_gm = _geometric_mean(candidate_lat) if candidate_lat else None
+
+	latency_retention = (
+		baseline_lat_gm / candidate_lat_gm
+		if baseline_lat_gm is not None and candidate_lat_gm is not None and candidate_lat_gm > 0.0
+		else None
+	)
+	latency_delta_pct = (
+		((candidate_lat_gm - baseline_lat_gm) / baseline_lat_gm) * 100.0
+		if baseline_lat_gm is not None and baseline_lat_gm > 0.0 and candidate_lat_gm is not None
+		else None
+	)
+	execution_time_reduction = (
+		baseline_total_tune_tir_time_sec / candidate_total_tune_tir_time_sec
+		if baseline_total_tune_tir_time_sec is not None
+		and candidate_total_tune_tir_time_sec is not None
+		and baseline_total_tune_tir_time_sec > 0.0
+		and candidate_total_tune_tir_time_sec > 0.0
+		else None
+	)
+	execution_time_delta_pct = (
+		((candidate_total_tune_tir_time_sec - baseline_total_tune_tir_time_sec)
+		 / baseline_total_tune_tir_time_sec) * 100.0
+		if baseline_total_tune_tir_time_sec is not None
+		and candidate_total_tune_tir_time_sec is not None
+		and baseline_total_tune_tir_time_sec > 0.0
+		else None
+	)
+	return {
+		"num_shapes": len(rows),
+		"num_comparable_latency_shapes": min(len(baseline_lat), len(candidate_lat)),
+		"baseline_latency_geomean_us": (
+			round(float(baseline_lat_gm), 6) if baseline_lat_gm is not None else None
+		),
+		"candidate_latency_geomean_us": (
+			round(float(candidate_lat_gm), 6) if candidate_lat_gm is not None else None
+		),
+		"baseline_total_tune_tir_time_sec": (
+			round(float(baseline_total_tune_tir_time_sec), 6)
+			if baseline_total_tune_tir_time_sec is not None
+			else None
+		),
+		"candidate_total_tune_tir_time_sec": (
+			round(float(candidate_total_tune_tir_time_sec), 6)
+			if candidate_total_tune_tir_time_sec is not None
+			else None
+		),
+		"baseline_total_tune_tir_time_human": _fmt_time_human(baseline_total_tune_tir_time_sec),
+		"candidate_total_tune_tir_time_human": _fmt_time_human(candidate_total_tune_tir_time_sec),
+		"baseline_execution_time_sec": (
+			round(float(baseline_total_tune_tir_time_sec), 6)
+			if baseline_total_tune_tir_time_sec is not None
+			else None
+		),
+		"candidate_execution_time_sec": (
+			round(float(candidate_total_tune_tir_time_sec), 6)
+			if candidate_total_tune_tir_time_sec is not None
+			else None
+		),
+		"latency_retention": round(float(latency_retention), 6) if latency_retention is not None else None,
+		"latency_delta_pct": (
+			round(float(latency_delta_pct), 6) if latency_delta_pct is not None else None
+		),
+		"execution_time_reduction": (
+			round(float(execution_time_reduction), 6)
+			if execution_time_reduction is not None
+			else None
+		),
+		"execution_time_delta_pct": (
+			round(float(execution_time_delta_pct), 6)
+			if execution_time_delta_pct is not None
+			else None
+		),
+	}
+
+
+def _render_text_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
+	if not headers:
+		return ""
+
+	# Compute visible widths (strip ANSI sequences) so colored cells align correctly
+	widths: List[int] = [ _visible_len(str(h)) for h in headers ]
+	for row in rows:
+		for idx, cell in enumerate(row):
+			widths[idx] = max(widths[idx], _visible_len(str(cell)))
+
+	def pad_cell(cell: str, width: int) -> str:
+		s = str(cell)
+		pad = max(0, width - _visible_len(s))
+		return s + " " * pad
+
+	header_row = " | ".join(pad_cell(str(h), widths[idx]) for idx, h in enumerate(headers))
+	separator = "-+-".join("-" * widths[idx] for idx in range(len(headers)))
+	data_rows = [
+		" | ".join(pad_cell(str(cell), widths[idx]) for idx, cell in enumerate(row))
+		for row in rows
+	]
+	return "\n".join([header_row, separator] + data_rows)
+
+
+def _fmt_table_number(value: Optional[float], precision: int) -> str:
+	if value is None:
+		return "n/a"
+	if not math.isfinite(float(value)):
+		return "n/a"
+	return f"{float(value):.{precision}f}"
+
+
+def _fmt_table_percent(value: Optional[float]) -> str:
+	if value is None:
+		return "n/a"
+	if not math.isfinite(float(value)):
+		return "n/a"
+	return f"{float(value):+.2f}%"
+
+
+def _fmt_table_percent_unsigned(value: Optional[float]) -> str:
+	if value is None:
+		return "n/a"
+	if not math.isfinite(float(value)):
+		return "n/a"
+	return f"{float(value):.2f}%"
+
+
+def _fmt_time_human(seconds: Optional[float]) -> str:
+	if seconds is None:
+		return "n/a"
+	try:
+		s = float(seconds)
+	except (TypeError, ValueError):
+		return "n/a"
+	if not math.isfinite(s):
+		return "n/a"
+	mins = int(max(0.0, s) // 60)
+	rem = max(0.0, s) - mins * 60
+	return f"{mins}m {rem:.3f}s"
+
+
+def _format_latency_rows_table(rows: Sequence[Dict[str, Any]]) -> str:
+	if not rows:
+		return "No per-task latency rows were available for comparison."
+
+	headers = [
+		"shape",
+		"baseline_latency_us",
+		"candidate_latency_us",
+		"baseline_task_tune_time",
+		"candidate_task_tune_time",
+		"latency_retention",
+		"exec_time_reduction",
+	]
+	data_rows: List[List[str]] = []
+	for row in rows:
+		shape_label = (
+			f"{row.get('kernel', '')}[M={row.get('M', '')}]"
+		)
+
+		# Decide coloring: candidate better => green, worse => red. None => no color.
+		base_lat = row.get("baseline_latency_us")
+		cand_lat = row.get("candidate_latency_us")
+		base_exec = row.get("baseline_execution_time_sec")
+		cand_exec = row.get("candidate_execution_time_sec")
+
+		# compare latencies: lower is better; treat near-equal as neutral
+		cand_lat_better = None
+		base_lat_better = None
+		if base_lat is not None and cand_lat is not None:
+			try:
+				b = float(base_lat)
+				c = float(cand_lat)
+				if abs(b - c) <= 1e-9:
+					cand_lat_better = None
+					base_lat_better = None
+				elif c < b:
+					cand_lat_better = True
+					base_lat_better = False
+				else:
+					cand_lat_better = False
+					base_lat_better = True
+			except Exception:
+				cand_lat_better = None
+				base_lat_better = None
+
+		cand_exec_better = None
+		base_exec_better = None
+		if base_exec is not None and cand_exec is not None:
+			try:
+				b = float(base_exec)
+				c = float(cand_exec)
+				if abs(b - c) <= 1e-9:
+					cand_exec_better = None
+					base_exec_better = None
+				elif c < b:
+					cand_exec_better = True
+					base_exec_better = False
+				else:
+					cand_exec_better = False
+					base_exec_better = True
+			except Exception:
+				cand_exec_better = None
+				base_exec_better = None
+
+		retention_val = row.get("retention")
+		exec_red_val = row.get("execution_time_reduction")
+		retention_good = None
+		if retention_val is not None:
+			try:
+				retention_good = float(retention_val) >= 1.0
+			except Exception:
+				retention_good = None
+		exec_red_good = None
+		if exec_red_val is not None:
+			try:
+				exec_red_good = float(exec_red_val) >= 1.0
+			except Exception:
+				exec_red_good = None
+
+		data_rows.append([
+			shape_label,
+			_maybe_color(_fmt_table_number(base_lat, 3), base_lat_better),
+			_maybe_color(_fmt_table_number(cand_lat, 3), cand_lat_better),
+			_maybe_color(_fmt_time_human(base_exec), base_exec_better),
+			_maybe_color(_fmt_time_human(cand_exec), cand_exec_better),
+			_maybe_color(_arrow_prefix(retention_good) + _fmt_table_number(retention_val, 3), retention_good),
+			_maybe_color(_arrow_prefix(exec_red_good) + _fmt_table_number(exec_red_val, 3), exec_red_good),
+		])
+	return _render_text_table(headers, data_rows)
+
+
+def _format_kernel_summary_table(rows: Sequence[Dict[str, Any]]) -> str:
+	if not rows:
+		return "No kernel-level summary rows were available for comparison."
+
+	headers = [
+		"kernel",
+		"shapes",
+		"baseline_lat_gm_us",
+		"candidate_lat_gm_us",
+		"baseline_tune_time",
+		"candidate_tune_time",
+		"latency_retention",
+		"exec_time_reduction",
+	]
+	data_rows: List[List[str]] = []
+	for row in rows:
+		# symmetric comparisons for baseline vs candidate
+		bg = row.get("baseline_geomean_us")
+		cg = row.get("candidate_geomean_us")
+		base_geomean_better = None
+		cand_geomean_better = None
+		if bg is not None and cg is not None:
+			try:
+				b = float(bg)
+				c = float(cg)
+				if abs(b - c) <= 1e-9:
+					base_geomean_better = None
+					cand_geomean_better = None
+				elif c < b:
+					cand_geomean_better = True
+					base_geomean_better = False
+				else:
+					cand_geomean_better = False
+					base_geomean_better = True
+			except Exception:
+				base_geomean_better = None
+				cand_geomean_better = None
+
+		eb = row.get("baseline_execution_time_sec")
+		ec = row.get("candidate_execution_time_sec")
+		base_exec_better = None
+		cand_exec_better = None
+		if eb is not None and ec is not None:
+			try:
+				b = float(eb)
+				c = float(ec)
+				if abs(b - c) <= 1e-9:
+					base_exec_better = None
+					cand_exec_better = None
+				elif c < b:
+					cand_exec_better = True
+					base_exec_better = False
+				else:
+					cand_exec_better = False
+					base_exec_better = True
+			except Exception:
+				base_exec_better = None
+				cand_exec_better = None
+
+		data_rows.append([
+			str(row.get("kernel", "")),
+			str(row.get("num_tasks", "")),
+			_maybe_color(_fmt_table_number(row.get("baseline_geomean_us"), 3), base_geomean_better),
+			_maybe_color(_fmt_table_number(row.get("candidate_geomean_us"), 3), cand_geomean_better),
+			_maybe_color(_fmt_time_human(row.get("baseline_execution_time_sec")), base_exec_better),
+			_maybe_color(_fmt_time_human(row.get("candidate_execution_time_sec")), cand_exec_better),
+			_maybe_color(_arrow_prefix(None if row.get("retention") is None else (float(row.get("retention") or 0.0) >= 1.0)) + _fmt_table_number(row.get("retention"), 4), None if row.get("retention") is None else float(row.get("retention") or 0.0) >= 1.0),
+			_maybe_color(_arrow_prefix(None if row.get("execution_time_reduction") is None else (float(row.get("execution_time_reduction") or 0.0) >= 1.0)) + _fmt_table_number(row.get("execution_time_reduction"), 4), None if row.get("execution_time_reduction") is None else float(row.get("execution_time_reduction") or 0.0) >= 1.0),
+		])
+	return _render_text_table(headers, data_rows)
+
+
+def _format_overall_summary_table(summary: Dict[str, Any]) -> str:
+	headers = [
+		"num_shapes",
+		"base_lat_gm_us",
+		"cand_lat_gm_us",
+		"base_total_tune_tir",
+		"cand_total_tune_tir",
+		"base_total_tune_s",
+		"cand_total_tune_s",
+		"latency_retention",
+		"exec_time_reduction",
+	]
+	# symmetric comparisons
+	base_lat = summary.get("baseline_latency_geomean_us")
+	cand_lat = summary.get("candidate_latency_geomean_us")
+	base_lat_better = None
+	cand_lat_better = None
+	if base_lat is not None and cand_lat is not None:
+		try:
+			b = float(base_lat)
+			c = float(cand_lat)
+			if abs(b - c) <= 1e-9:
+				base_lat_better = None
+				cand_lat_better = None
+			elif c < b:
+				cand_lat_better = True
+				base_lat_better = False
+			else:
+				cand_lat_better = False
+				base_lat_better = True
+		except Exception:
+			base_lat_better = None
+			cand_lat_better = None
+
+	base_time = summary.get("baseline_total_tune_tir_time_sec")
+	cand_time = summary.get("candidate_total_tune_tir_time_sec")
+	base_time_better = None
+	cand_time_better = None
+	if base_time is not None and cand_time is not None:
+		try:
+			b = float(base_time)
+			c = float(cand_time)
+			if abs(b - c) <= 1e-9:
+				base_time_better = None
+				cand_time_better = None
+			elif c < b:
+				cand_time_better = True
+				base_time_better = False
+			else:
+				cand_time_better = False
+				base_time_better = True
+		except Exception:
+			base_time_better = None
+			cand_time_better = None
+
+	rows = [
+		[
+			str(summary.get("num_shapes", "")),
+			_maybe_color(_fmt_table_number(summary.get("baseline_latency_geomean_us"), 3), base_lat_better),
+			_maybe_color(_fmt_table_number(summary.get("candidate_latency_geomean_us"), 3), cand_lat_better),
+			_maybe_color(str(summary.get("baseline_total_tune_tir_time_human", "n/a")), base_time_better),
+			_maybe_color(str(summary.get("candidate_total_tune_tir_time_human", "n/a")), cand_time_better),
+			_maybe_color(_fmt_table_number(summary.get("baseline_total_tune_tir_time_sec"), 3), base_time_better),
+			_maybe_color(_fmt_table_number(summary.get("candidate_total_tune_tir_time_sec"), 3), cand_time_better),
+			_maybe_color(_arrow_prefix(None if summary.get("latency_retention") is None else (float(summary.get("latency_retention") or 0.0) >= 1.0)) + _fmt_table_number(summary.get("latency_retention"), 4), None if summary.get("latency_retention") is None else float(summary.get("latency_retention") or 0.0) >= 1.0),
+			_maybe_color(_arrow_prefix(None if summary.get("execution_time_reduction") is None else (float(summary.get("execution_time_reduction") or 0.0) >= 1.0)) + _fmt_table_number(summary.get("execution_time_reduction"), 4), None if summary.get("execution_time_reduction") is None else float(summary.get("execution_time_reduction") or 0.0) >= 1.0),
+		]
+	]
+	return _render_text_table(headers, rows)
+
+
+def _persist_comparison_result(
+	comparison: Dict[str, Any],
+	args: argparse.Namespace,
+	tasks: Sequence[TaskSpec],
+) -> str:
+	store = _load_json(COMPARE_RESULTS_FILE, default={"metadata": {}, "comparisons": []})
+	store.setdefault("metadata", {})
+	store.setdefault("comparisons", [])
+
+	compare_id = _stable_hash(
+		{
+			"timestamp": comparison.get("timestamp"),
+			"mode": comparison.get("mode"),
+			"baseline_config": comparison.get("baseline", {}).get("config", {}),
+			"candidate_config": comparison.get("candidate", {}).get("config", {}),
+		}
+	)
+
+	entry = copy.deepcopy(comparison)
+	entry["compare_id"] = compare_id
+	entry["inputs"] = {
+		"best_config_path": args.best_config_path,
+		"benchmark_only": bool(args.benchmark_only),
+		"force_rerun": bool(args.force_rerun),
+		"task_count": len(tasks),
+	}
+
+	store["comparisons"].append(entry)
+	store["latest_compare"] = entry
+	store["metadata"].update(
+		{
+			"last_updated": _utc_now(),
+			"target": str(TARGET),
+			"schema": "comparison_results.v2",
+		}
+	)
+	_write_json(COMPARE_RESULTS_FILE, store)
+	return compare_id
+
+
+def _safe_total_tuning_time_sec(experiment: Optional[Dict[str, Any]]) -> Optional[float]:
+	if not isinstance(experiment, dict):
+		return None
+	aggregate = experiment.get("aggregate", {})
+	if not isinstance(aggregate, dict):
+		return None
+	raw_value = aggregate.get("total_tuning_time_sec")
+	if raw_value is None:
+		return None
+	try:
+		value = float(raw_value)
+	except (TypeError, ValueError):
+		return None
+	if not math.isfinite(value) or value < 0.0:
+		return None
+	return value
+
+
+def _lookup_historical_tune_series_time_sec(
+	store: Dict[str, Any],
+	config_hash: str,
+	tasks_signature: str,
+) -> Optional[float]:
+	best_time: Optional[float] = None
+	best_timestamp = ""
+	for experiment in store.get("experiments", []):
+		if not isinstance(experiment, dict):
+			continue
+		if str(experiment.get("config_hash", "")) != config_hash:
+			continue
+		if str(experiment.get("tasks_signature", "")) != tasks_signature:
+			continue
+		if bool(experiment.get("benchmark_only", False)):
+			continue
+
+		time_sec = _safe_total_tuning_time_sec(experiment)
+		if time_sec is None:
+			continue
+
+		timestamp = str(experiment.get("timestamp", ""))
+		if best_time is None or timestamp > best_timestamp:
+			best_time = time_sec
+			best_timestamp = timestamp
+
+	return best_time
+
+
+def _resolve_total_tune_series_time_sec(
+	store: Dict[str, Any],
+	experiment: Dict[str, Any],
+) -> Optional[float]:
+	current_time = _safe_total_tuning_time_sec(experiment)
+	if not bool(experiment.get("benchmark_only", False)):
+		return current_time
+
+	config_hash = str(experiment.get("config_hash", ""))
+	tasks_signature = str(experiment.get("tasks_signature", ""))
+	historical_time = _lookup_historical_tune_series_time_sec(
+		store=store,
+		config_hash=config_hash,
+		tasks_signature=tasks_signature,
+	)
+	if historical_time is not None:
+		return historical_time
+	return current_time
+
+
 def _run_pruning_iteration(
 	*,
 	iteration: int,
@@ -1626,20 +2373,78 @@ def _run_compare_mode(
 		profile=profile,
 	)
 
+	latency_rows = _build_latency_comparison_rows(
+		baseline_experiment=baseline_exp,
+		candidate_experiment=pruned_exp,
+	)
+	kernel_summaries = _build_kernel_latency_summaries(latency_rows)
+	baseline_total_tune_tir_time_sec = _resolve_total_tune_series_time_sec(store, baseline_exp)
+	candidate_total_tune_tir_time_sec = _resolve_total_tune_series_time_sec(store, pruned_exp)
+	baseline_aggregate = copy.deepcopy(baseline_exp.get("aggregate", {}))
+	candidate_aggregate = copy.deepcopy(pruned_exp.get("aggregate", {}))
+	if isinstance(baseline_aggregate, dict):
+		baseline_aggregate.pop("score", None)
+	if isinstance(candidate_aggregate, dict):
+		candidate_aggregate.pop("score", None)
+	overall_summary = _build_overall_comparison_summary(
+		latency_rows,
+		baseline_total_tune_tir_time_sec=baseline_total_tune_tir_time_sec,
+		candidate_total_tune_tir_time_sec=candidate_total_tune_tir_time_sec,
+	)
+
+	LOGGER.info("Per-task latency comparison table:\n%s", _format_latency_rows_table(latency_rows))
+	LOGGER.info("Per-kernel geomean comparison table:\n%s", _format_kernel_summary_table(kernel_summaries))
+	LOGGER.info(
+		"Full tune_tir series time | baseline=%s (%ss) | candidate=%s (%ss)",
+		_fmt_time_human(baseline_total_tune_tir_time_sec),
+		_fmt_table_number(baseline_total_tune_tir_time_sec, 3),
+		_fmt_time_human(candidate_total_tune_tir_time_sec),
+		_fmt_table_number(candidate_total_tune_tir_time_sec, 3),
+	)
+	LOGGER.info("Overall comparison summary:\n%s", _format_overall_summary_table(overall_summary))
+
 	comparison = {
 		"timestamp": _utc_now(),
 		"mode": "benchmark-only" if args.benchmark_only else "compare-against-baseline",
 		"baseline": {
 			"config": baseline_exp["config"],
-			"aggregate": baseline_exp["aggregate"],
+			"aggregate": baseline_aggregate,
+			"total_tune_tir_time_sec": (
+				round(float(baseline_total_tune_tir_time_sec), 6)
+				if baseline_total_tune_tir_time_sec is not None
+				else None
+			),
+			"total_tune_tir_time_human": _fmt_time_human(baseline_total_tune_tir_time_sec),
 		},
 		"candidate": {
 			"config": pruned_exp["config"],
-			"aggregate": pruned_exp["aggregate"],
+			"aggregate": candidate_aggregate,
+			"total_tune_tir_time_sec": (
+				round(float(candidate_total_tune_tir_time_sec), 6)
+				if candidate_total_tune_tir_time_sec is not None
+				else None
+			),
+			"total_tune_tir_time_human": _fmt_time_human(candidate_total_tune_tir_time_sec),
 		},
-		"score": pruned_exp["aggregate"].get("score", 0.0),
+		"config_tune_tir_series_time": {
+			"baseline_sec": (
+				round(float(baseline_total_tune_tir_time_sec), 6)
+				if baseline_total_tune_tir_time_sec is not None
+				else None
+			),
+			"baseline_human": _fmt_time_human(baseline_total_tune_tir_time_sec),
+			"candidate_sec": (
+				round(float(candidate_total_tune_tir_time_sec), 6)
+				if candidate_total_tune_tir_time_sec is not None
+				else None
+			),
+			"candidate_human": _fmt_time_human(candidate_total_tune_tir_time_sec),
+		},
+		"shape_comparison_table": latency_rows,
+		"latency_comparison_table": latency_rows,
+		"kernel_latency_summary": kernel_summaries,
+		"overall_summary": overall_summary,
 	}
-	store["latest_compare"] = comparison
 	return comparison
 
 
@@ -1739,15 +2544,25 @@ def main() -> int:
 			run_tracker=run_tracker,
 			profile=profile,
 		)
+		compare_id = _persist_comparison_result(comparison, args=args, tasks=tasks)
+		store["latest_compare_ref"] = {
+			"compare_id": compare_id,
+			"path": COMPARE_RESULTS_FILE,
+			"timestamp": comparison.get("timestamp"),
+		}
 		_write_json(PRUNING_EXPERIMENTS_FILE, store)
 		upload_pruning_experiments(store, profile=profile)
 
 		LOGGER.info("Comparison completed")
+		LOGGER.info("Comparison details written to %s (id=%s)", COMPARE_RESULTS_FILE, compare_id)
+		latency_retention_val = float(comparison.get("overall_summary", {}).get("latency_retention") or 0.0)
+		time_reduction_val = float(comparison.get("overall_summary", {}).get("execution_time_reduction") or 0.0)
+		latency_retention_good = None if comparison.get("overall_summary", {}).get("latency_retention") is None else float(comparison.get("overall_summary", {}).get("latency_retention") or 0.0) >= 1.0
+		time_reduction_good = None if comparison.get("overall_summary", {}).get("execution_time_reduction") is None else float(comparison.get("overall_summary", {}).get("execution_time_reduction") or 0.0) >= 1.0
 		LOGGER.info(
-			"Candidate score=%.4f retention=%.4f time_reduction=%.4f",
-			comparison["candidate"]["aggregate"].get("score", 0.0),
-			comparison["candidate"]["aggregate"].get("latency_retention", 0.0),
-			comparison["candidate"]["aggregate"].get("time_reduction", 0.0),
+			"Comparison retention= %s total_tune_tir_time_reduction= %s",
+			_maybe_color(_arrow_prefix(latency_retention_good) + f"{latency_retention_val:.4f}", latency_retention_good),
+			_maybe_color(_arrow_prefix(time_reduction_good) + f"{time_reduction_val:.4f}", time_reduction_good),
 		)
 		return 0
 
