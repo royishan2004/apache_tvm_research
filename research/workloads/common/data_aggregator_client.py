@@ -22,6 +22,7 @@ DEFAULT_DATA_AGGREGATOR_URL = "http://localhost:3000/api/upload/bert_matmul_resu
 DEFAULT_BEST_SCHEDULES_URL = "http://localhost:3000/api/upload/best_schedules"
 DEFAULT_BEST_PRUNED_CONFIG_URL = "http://localhost:3000/api/upload/best_pruned_config"
 DEFAULT_PRUNING_EXPERIMENTS_URL = "http://localhost:3000/api/upload/pruning_experiments"
+DEFAULT_COMPARISON_RESULTS_URL = "http://localhost:3000/api/upload/comparison_results"
 
 
 def upload_results(
@@ -124,6 +125,29 @@ def upload_pruning_experiments(
         dedupe=dedupe,
         timeout=timeout,
         payload_filename="pruning_experiments.json",
+    )
+
+
+def upload_comparison_results(
+    payload: Any,
+    url: Optional[str] = None,
+    profile: Optional[str] = None,
+    dedupe: bool = False,
+    timeout: Optional[int] = None,
+) -> bool:
+    """Upload comparison_results payload to the data aggregator."""
+    if url is None:
+        url = os.environ.get(
+            "DATA_AGGREGATOR_COMPARISON_RESULTS_URL",
+            DEFAULT_COMPARISON_RESULTS_URL,
+        )
+    return _upload_payload(
+        payload,
+        url=url,
+        profile=profile,
+        dedupe=dedupe,
+        timeout=timeout,
+        payload_filename="comparison_results.json",
     )
 
 
@@ -325,6 +349,7 @@ def _looks_like_data_aggregator_response(probe_url: str, raw_body: str) -> bool:
             and "/api/upload/best_schedules" in paths
             and "/api/upload/best_pruned_config" in paths
             and "/api/upload/pruning_experiments" in paths
+            and "/api/upload/comparison_results" in paths
         )
 
     return body == "Healthy!"

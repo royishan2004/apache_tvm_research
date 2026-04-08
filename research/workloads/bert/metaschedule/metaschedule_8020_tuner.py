@@ -41,6 +41,7 @@ from research.workloads.common.data_aggregator_client import (
 	ensure_data_aggregator_connection_or_prompt,
 	resolve_profile,
 	upload_best_pruned_config,
+	upload_comparison_results,
 	upload_pruning_experiments,
 )
 from research.workloads.common.matmul_templates import matmul_tir
@@ -2552,6 +2553,10 @@ def main() -> int:
 		}
 		_write_json(PRUNING_EXPERIMENTS_FILE, store)
 		upload_pruning_experiments(store, profile=profile)
+		upload_comparison_results(
+			_load_json(COMPARE_RESULTS_FILE, default={"metadata": {}, "comparisons": []}),
+			profile=profile,
+		)
 
 		LOGGER.info("Comparison completed")
 		LOGGER.info("Comparison details written to %s (id=%s)", COMPARE_RESULTS_FILE, compare_id)

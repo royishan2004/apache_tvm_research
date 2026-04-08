@@ -9,6 +9,7 @@ Supported commands:
 - `best-schedules` -> imports `research/results/metaschedule/best_schedules.json` into `*_best_schedules`
 - `best-pruned-config` -> imports `research/results/metaschedule/best_pruned_config.json` into `*_best_pruned_config`
 - `pruning-experiments` -> imports `research/results/metaschedule/pruning_experiments.json` into `*_pruning_experiments`
+- `comparison-results` -> imports `research/results/metaschedule/comparison_results.json` into `*_comparison_results`
 
 ### Requirements
 
@@ -24,8 +25,10 @@ python3 scripts/import_bert_matmul_results.py bert-matmul
 python3 scripts/import_bert_matmul_results.py best-schedules
 python3 scripts/import_bert_matmul_results.py best-pruned-config
 python3 scripts/import_bert_matmul_results.py pruning-experiments
+python3 scripts/import_bert_matmul_results.py comparison-results
 python3 scripts/import_bert_matmul_results.py best-schedules --mode=direct
 python3 scripts/import_bert_matmul_results.py pruning-experiments --mode=direct
+python3 scripts/import_bert_matmul_results.py comparison-results --mode=direct
 ```
 
 Backward compatible shortcut:
@@ -37,12 +40,13 @@ python3 scripts/import_bert_matmul_results.py --dry-run
 This defaults to the `bert-matmul` command.
 
 Options:
-- `bert-matmul`, `best-schedules`, `best-pruned-config`, or `pruning-experiments` to select which JSON artifact to import
+- `bert-matmul`, `best-schedules`, `best-pruned-config`, `pruning-experiments`, or `comparison-results` to select which JSON artifact to import
 - `--mode` to choose `api` (default) or `direct` DB connection
 - `--api-url` to override `DATA_AGGREGATOR_URL`
 - `best-schedules` command uses `DATA_AGGREGATOR_BEST_SCHEDULES_URL` by default
 - `best-pruned-config` command uses `DATA_AGGREGATOR_BEST_PRUNED_CONFIG_URL` by default
 - `pruning-experiments` command uses `DATA_AGGREGATOR_PRUNING_EXPERIMENTS_URL` by default
+- `comparison-results` command uses `DATA_AGGREGATOR_COMPARISON_RESULTS_URL` by default
 - `--profile` to override `DATA_AGGREGATOR_PROFILE` (also selects the target table in `direct` mode)
 - `--no-dedupe` to disable dedupe checks
 - `--timeout` to set API upload timeout (seconds)

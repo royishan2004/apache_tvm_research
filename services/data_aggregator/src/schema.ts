@@ -157,3 +157,45 @@ export const pruningExperiments = pgTable(
 
 export type PruningExperimentRow = typeof pruningExperiments.$inferSelect;
 export type NewPruningExperimentRow = typeof pruningExperiments.$inferInsert;
+
+export const comparisonResults = pgTable(
+  "comparison_results",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    ingestedAt: timestamp("ingested_at", { withTimezone: true }).defaultNow().notNull(),
+
+    compareId: text("compare_id").notNull(),
+    ts: timestamp("ts", { withTimezone: true }).notNull(),
+    mode: text("mode").notNull(),
+
+    baselineConfigName: text("baseline_config_name").notNull().default(""),
+    baselineStateToken: text("baseline_state_token").notNull().default(""),
+    candidateConfigName: text("candidate_config_name").notNull().default(""),
+    candidateStateToken: text("candidate_state_token").notNull().default(""),
+
+    benchmarkOnly: boolean("benchmark_only").notNull().default(false),
+    forceRerun: boolean("force_rerun").notNull().default(false),
+    taskCount: integer("task_count"),
+    numShapes: integer("num_shapes"),
+
+    latencyRetention: doublePrecision("latency_retention"),
+    executionTimeReduction: doublePrecision("execution_time_reduction"),
+    baselineLatencyGeomeanUs: doublePrecision("baseline_latency_geomean_us"),
+    candidateLatencyGeomeanUs: doublePrecision("candidate_latency_geomean_us"),
+    baselineTotalTuneTirTimeSec: doublePrecision("baseline_total_tune_tir_time_sec"),
+    candidateTotalTuneTirTimeSec: doublePrecision("candidate_total_tune_tir_time_sec"),
+
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    latestCompare: jsonb("latest_compare").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+    comparison: jsonb("comparison").$type<Record<string, unknown>>().notNull(),
+  },
+  (table) => [
+    uniqueIndex("uniq_comparison_results_compare_id").on(table.compareId),
+    index("idx_comparison_results_ts").on(table.ts),
+    index("idx_comparison_results_mode_ts").on(table.mode, table.ts),
+    index("idx_comparison_results_retention").on(table.latencyRetention),
+  ]
+)
+
+export type ComparisonResultRow = typeof comparisonResults.$inferSelect;
+export type NewComparisonResultRow = typeof comparisonResults.$inferInsert;

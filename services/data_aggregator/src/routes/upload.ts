@@ -11,6 +11,7 @@ const TABLE_SUFFIX = 'bert_matmul_results'
 const BEST_SCHEDULES_TABLE_SUFFIX = 'best_schedules'
 const BEST_PRUNED_CONFIG_TABLE_SUFFIX = 'best_pruned_config'
 const PRUNING_EXPERIMENTS_TABLE_SUFFIX = 'pruning_experiments'
+const COMPARISON_RESULTS_TABLE_SUFFIX = 'comparison_results'
 const LEGACY_DEFAULT_PROFILE = 'i5-1235U'
 const DEFAULT_PROFILE = detectDefaultProfile()
 const PROFILE_PATTERN = /^[A-Za-z0-9 _-]+$/
@@ -20,6 +21,7 @@ const MAX_TABLE_SUFFIX_LEN = Math.max(
   BEST_SCHEDULES_TABLE_SUFFIX.length,
   BEST_PRUNED_CONFIG_TABLE_SUFFIX.length,
   PRUNING_EXPERIMENTS_TABLE_SUFFIX.length,
+  COMPARISON_RESULTS_TABLE_SUFFIX.length,
 )
 const PROFILE_MAX_LEN = Math.max(1, TABLE_NAME_MAX - (MAX_TABLE_SUFFIX_LEN + 1))
 
@@ -104,6 +106,29 @@ type PruningExperimentInsertRow = {
   metadataJson: string
   latestPruningRunJson: string
   experimentJson: string
+}
+
+type ComparisonResultInsertRow = {
+  compareId: string
+  ts: Date
+  mode: string
+  baselineConfigName: string
+  baselineStateToken: string
+  candidateConfigName: string
+  candidateStateToken: string
+  benchmarkOnly: boolean
+  forceRerun: boolean
+  taskCount: number | null
+  numShapes: number | null
+  latencyRetention: number | null
+  executionTimeReduction: number | null
+  baselineLatencyGeomeanUs: number | null
+  candidateLatencyGeomeanUs: number | null
+  baselineTotalTuneTirTimeSec: number | null
+  candidateTotalTuneTirTimeSec: number | null
+  metadataJson: string
+  latestCompareJson: string
+  comparisonJson: string
 }
 
 const uploadRoute = createRoute({
@@ -758,6 +783,187 @@ uploadRouter.openapi(uploadPruningExperimentsRoute, async (c) => {
   )
 })
 
+const uploadComparisonResultsRoute = createRoute({
+  method: 'post',
+  path: '/api/upload/comparison_results',
+  tags: ['ingestion'],
+  summary: 'Upload MetaSchedule comparison results',
+  description:
+    'Accepts comparison_results.json payload and stores profile-scoped comparison rows.',
+  request: {
+    body: {
+      content: {
+        'multipart/form-data': {
+          schema: z.object({
+            profile: z
+              .string()
+              .optional()
+              .openapi({
+                description:
+                  `Hardware profile for the results (CPU model). Defaults to ${DEFAULT_PROFILE}.`,
+                example: DEFAULT_PROFILE,
+              }),
+            file: z.any().openapi({
+              type: 'string',
+              format: 'binary',
+              description: 'JSON file containing comparison results.',
+            }),
+            dedupe: z
+              .string()
+              .optional()
+              .openapi({
+                description:
+                  'When set, skip rows that already exist in storage (values: 1/true/yes/on).',
+                example: '1',
+              }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Ingestion result',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            inserted: z.number(),
+            duplicates: z.number(),
+            rejected: z.number(),
+            errors: z.array(
+              z.object({
+                index: z.number(),
+                error: z.string(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Bad request',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(false),
+            error: z.string(),
+          }),
+        },
+      },
+    },
+    415: {
+      description: 'Unsupported content type',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(false),
+            error: z.string(),
+          }),
+        },
+      },
+    },
+  },
+})
+
+uploadRouter.openapi(uploadComparisonResultsRoute, async (c) => {
+  const contentType = c.req.header('content-type') ?? ''
+  if (!contentType.includes('multipart/form-data')) {
+    return c.json({ ok: false, error: 'Unsupported content type' }, 415)
+  }
+
+  const body = await c.req.parseBody()
+  const profile = typeof body.profile === 'string' ? body.profile : DEFAULT_PROFILE
+  const file = body.file instanceof File ? body.file : undefined
+  const dedupe = parseBool(body.dedupe)
+
+  if (!file) {
+    return c.json({ ok: false, error: 'Missing file field' }, 400)
+  }
+
+  const normalizedProfile = normalizeProfile(profile)
+  if (!normalizedProfile) {
+    return c.json({ ok: false, error: 'Invalid profile' }, 400)
+  }
+
+  touchActivity('upload comparison_results request')
+
+  const fullText = await file.text()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fullText)
+  } catch {
+    return c.json({ ok: false, error: 'Invalid JSON payload' }, 400)
+  }
+
+  let comparisonsPayload: unknown[] = []
+  let metadataPayload: Record<string, unknown> = {}
+  let latestComparePayload: Record<string, unknown> = {}
+
+  if (Array.isArray(parsed)) {
+    comparisonsPayload = parsed
+  } else if (isObjectRecord(parsed)) {
+    if (Array.isArray(parsed.comparisons)) {
+      comparisonsPayload = parsed.comparisons
+    } else {
+      comparisonsPayload = [parsed]
+    }
+
+    if (isObjectRecord(parsed.metadata)) {
+      metadataPayload = parsed.metadata
+    }
+    if (isObjectRecord(parsed.latest_compare)) {
+      latestComparePayload = parsed.latest_compare
+    }
+  } else {
+    return c.json({ ok: false, error: 'Expected a JSON object or array' }, 400)
+  }
+
+  const rows: ComparisonResultInsertRow[] = []
+  const errors: Array<{ index: number; error: string }> = []
+  const chunkSize = 500
+  let inserted = 0
+  let duplicates = 0
+
+  const { tableName } = await ensureComparisonResultsProfileTable(normalizedProfile)
+
+  const flushChunk = async () => {
+    if (rows.length === 0) return
+    const result = await insertComparisonResultRows(tableName, rows, dedupe)
+    inserted += result.inserted
+    duplicates += result.duplicates
+    rows.length = 0
+  }
+
+  for (let i = 0; i < comparisonsPayload.length; i++) {
+    const entry = comparisonsPayload[i]
+    if (!isObjectRecord(entry)) {
+      errors.push({ index: i, error: 'Array element is not an object' })
+      continue
+    }
+
+    parseComparisonResultEntry(
+      entry,
+      i,
+      rows,
+      errors,
+      metadataPayload,
+      latestComparePayload,
+    )
+
+    if (rows.length >= chunkSize) {
+      await flushChunk()
+    }
+  }
+
+  await flushChunk()
+
+  return c.json(
+    { ok: true, inserted, duplicates, rejected: errors.length, errors },
+    200
+  )
+})
+
 function parseBool(value: unknown): boolean {
   if (typeof value === 'boolean') return value
   if (typeof value !== 'string') return false
@@ -989,6 +1195,79 @@ function parsePruningExperimentEntry(
     metadataJson: canonicalJson(metadataPayload),
     latestPruningRunJson: canonicalJson(latestPruningRunPayload),
     experimentJson: canonicalJson(entry),
+  })
+}
+
+function parseComparisonResultEntry(
+  entry: Record<string, unknown>,
+  index: number,
+  rows: ComparisonResultInsertRow[],
+  errors: Array<{ index: number; error: string }>,
+  metadataPayload: Record<string, unknown>,
+  latestComparePayload: Record<string, unknown>,
+) {
+  const ts = parseTimestamp(entry.timestamp ?? entry.ts)
+  if (!ts) {
+    errors.push({ index, error: 'Invalid timestamp' })
+    return
+  }
+
+  let compareId = typeof entry.compare_id === 'string' ? entry.compare_id : ''
+  if (!compareId) {
+    compareId = createHash('sha256')
+      .update(canonicalJson(entry))
+      .digest('hex')
+      .slice(0, 16)
+  }
+
+  if (!compareId) {
+    errors.push({ index, error: 'Missing compare_id' })
+    return
+  }
+
+  const baseline = isObjectRecord(entry.baseline) ? entry.baseline : {}
+  const baselineConfig = isObjectRecord(baseline.config) ? baseline.config : {}
+  const candidate = isObjectRecord(entry.candidate) ? entry.candidate : {}
+  const candidateConfig = isObjectRecord(candidate.config) ? candidate.config : {}
+  const inputs = isObjectRecord(entry.inputs) ? entry.inputs : {}
+  const summary = isObjectRecord(entry.overall_summary) ? entry.overall_summary : {}
+  const tuneSeries = isObjectRecord(entry.config_tune_tir_series_time)
+    ? entry.config_tune_tir_series_time
+    : {}
+
+  rows.push({
+    compareId,
+    ts,
+    mode: typeof entry.mode === 'string' && entry.mode ? entry.mode : 'compare',
+    baselineConfigName:
+      typeof baselineConfig.name === 'string' ? baselineConfig.name : '',
+    baselineStateToken:
+      typeof baselineConfig.state_token === 'string'
+        ? baselineConfig.state_token
+        : '',
+    candidateConfigName:
+      typeof candidateConfig.name === 'string' ? candidateConfig.name : '',
+    candidateStateToken:
+      typeof candidateConfig.state_token === 'string'
+        ? candidateConfig.state_token
+        : '',
+    benchmarkOnly: toOptionalBoolean(inputs.benchmark_only) ?? false,
+    forceRerun: toOptionalBoolean(inputs.force_rerun) ?? false,
+    taskCount: finiteInteger(inputs.task_count),
+    numShapes: finiteInteger(summary.num_shapes),
+    latencyRetention: finiteNumber(summary.latency_retention),
+    executionTimeReduction: finiteNumber(summary.execution_time_reduction),
+    baselineLatencyGeomeanUs: finiteNumber(summary.baseline_latency_geomean_us),
+    candidateLatencyGeomeanUs: finiteNumber(summary.candidate_latency_geomean_us),
+    baselineTotalTuneTirTimeSec: finiteNumber(
+      summary.baseline_total_tune_tir_time_sec ?? tuneSeries.baseline_sec,
+    ),
+    candidateTotalTuneTirTimeSec: finiteNumber(
+      summary.candidate_total_tune_tir_time_sec ?? tuneSeries.candidate_sec,
+    ),
+    metadataJson: canonicalJson(metadataPayload),
+    latestCompareJson: canonicalJson(latestComparePayload),
+    comparisonJson: canonicalJson(entry),
   })
 }
 
@@ -1423,6 +1702,87 @@ async function ensurePruningExperimentsProfileTable(
   return { tableName, tableKey: key }
 }
 
+async function ensureComparisonResultsProfileTable(
+  profile: string,
+): Promise<{ tableName: string; tableKey: string }> {
+  const tableName = profileTableNameForSuffix(profile, COMPARISON_RESULTS_TABLE_SUFFIX)
+  const key = tableKey(profile)
+
+  const legacyProfileName = legacyProfileTableNameForSuffix(profile, COMPARISON_RESULTS_TABLE_SUFFIX)
+  if (legacyProfileName !== tableName) {
+    const legacyProfileExists = await tableExists(legacyProfileName)
+    const targetExists = await tableExists(tableName)
+    if (legacyProfileExists && !targetExists) {
+      await execute(
+        sql`alter table ${sql.identifier(legacyProfileName)} rename to ${sql.identifier(tableName)}`
+      )
+    }
+  }
+
+  if (profile === DEFAULT_PROFILE.toLowerCase()) {
+    const legacyExists = await tableExists(COMPARISON_RESULTS_TABLE_SUFFIX)
+    const targetExists = await tableExists(tableName)
+    if (legacyExists && !targetExists) {
+      await execute(
+        sql`alter table ${sql.identifier(COMPARISON_RESULTS_TABLE_SUFFIX)} rename to ${sql.identifier(tableName)}`
+      )
+    }
+  }
+
+  await execute(sql`create extension if not exists pgcrypto`)
+  await execute(sql`
+    create table if not exists ${sql.identifier(tableName)} (
+      id uuid primary key default gen_random_uuid(),
+      ingested_at timestamptz not null default now(),
+      compare_id text not null,
+      ts timestamptz not null,
+      mode text not null,
+      baseline_config_name text not null default '',
+      baseline_state_token text not null default '',
+      candidate_config_name text not null default '',
+      candidate_state_token text not null default '',
+      benchmark_only boolean not null default false,
+      force_rerun boolean not null default false,
+      task_count integer,
+      num_shapes integer,
+      latency_retention double precision,
+      execution_time_reduction double precision,
+      baseline_latency_geomean_us double precision,
+      candidate_latency_geomean_us double precision,
+      baseline_total_tune_tir_time_sec double precision,
+      candidate_total_tune_tir_time_sec double precision,
+      metadata jsonb not null default '{}'::jsonb,
+      latest_compare jsonb not null default '{}'::jsonb,
+      comparison jsonb not null
+    )
+  `)
+
+  const indexKey = `${key}_${COMPARISON_RESULTS_TABLE_SUFFIX}`
+  const idxTs = clampIdentifier(`idx_${indexKey}_ts`)
+  const idxModeTs = clampIdentifier(`idx_${indexKey}_mode_ts`)
+  const idxRetention = clampIdentifier(`idx_${indexKey}_retention`)
+  const uniqCompareId = clampIdentifier(`uniq_${indexKey}_compare_id`)
+
+  await execute(sql`
+    create index if not exists ${sql.identifier(idxTs)}
+    on ${sql.identifier(tableName)} (ts)
+  `)
+  await execute(sql`
+    create index if not exists ${sql.identifier(idxModeTs)}
+    on ${sql.identifier(tableName)} (mode, ts)
+  `)
+  await execute(sql`
+    create index if not exists ${sql.identifier(idxRetention)}
+    on ${sql.identifier(tableName)} (latency_retention)
+  `)
+  await execute(sql`
+    create unique index if not exists ${sql.identifier(uniqCompareId)}
+    on ${sql.identifier(tableName)} (compare_id)
+  `)
+
+  return { tableName, tableKey: key }
+}
+
 async function insertRows(
   tableName: string,
   rows: InsertRow[],
@@ -1681,6 +2041,84 @@ async function insertPruningExperimentRows(
 
   if (dedupe) {
     query = query.append(sql` on conflict (run_id) do nothing returning 1`)
+  }
+
+  const result = await execute(query)
+  if (!dedupe) {
+    return { inserted: rows.length, duplicates: 0 }
+  }
+
+  const inserted = Array.isArray((result as any).rows) ? (result as any).rows.length : 0
+  return { inserted, duplicates: rows.length - inserted }
+}
+
+async function insertComparisonResultRows(
+  tableName: string,
+  rows: ComparisonResultInsertRow[],
+  dedupe: boolean,
+): Promise<{ inserted: number; duplicates: number }> {
+  if (rows.length === 0) return { inserted: 0, duplicates: 0 }
+
+  const columnNames = [
+    'compare_id',
+    'ts',
+    'mode',
+    'baseline_config_name',
+    'baseline_state_token',
+    'candidate_config_name',
+    'candidate_state_token',
+    'benchmark_only',
+    'force_rerun',
+    'task_count',
+    'num_shapes',
+    'latency_retention',
+    'execution_time_reduction',
+    'baseline_latency_geomean_us',
+    'candidate_latency_geomean_us',
+    'baseline_total_tune_tir_time_sec',
+    'candidate_total_tune_tir_time_sec',
+    'metadata',
+    'latest_compare',
+    'comparison',
+  ]
+
+  const columnsSql = sql.join(columnNames.map((name) => sql.identifier(name)), sql`, `)
+  const valuesSql = sql.join(
+    rows.map(
+      (row) =>
+        sql`(
+          ${row.compareId},
+          ${row.ts},
+          ${row.mode},
+          ${row.baselineConfigName},
+          ${row.baselineStateToken},
+          ${row.candidateConfigName},
+          ${row.candidateStateToken},
+          ${row.benchmarkOnly},
+          ${row.forceRerun},
+          ${row.taskCount},
+          ${row.numShapes},
+          ${row.latencyRetention},
+          ${row.executionTimeReduction},
+          ${row.baselineLatencyGeomeanUs},
+          ${row.candidateLatencyGeomeanUs},
+          ${row.baselineTotalTuneTirTimeSec},
+          ${row.candidateTotalTuneTirTimeSec},
+          ${row.metadataJson}::jsonb,
+          ${row.latestCompareJson}::jsonb,
+          ${row.comparisonJson}::jsonb
+        )`
+    ),
+    sql`, `
+  )
+
+  let query = sql`
+    insert into ${sql.identifier(tableName)} (${columnsSql})
+    values ${valuesSql}
+  `
+
+  if (dedupe) {
+    query = query.append(sql` on conflict (compare_id) do nothing returning 1`)
   }
 
   const result = await execute(query)

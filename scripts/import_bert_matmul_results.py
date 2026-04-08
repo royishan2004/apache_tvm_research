@@ -16,6 +16,7 @@ DEFAULT_BERT_RESULTS = ROOT / "research" / "results" / "bert_matmul_results.json
 DEFAULT_BEST_SCHEDULES = ROOT / "research" / "results" / "metaschedule" / "best_schedules.json"
 DEFAULT_BEST_PRUNED_CONFIG = ROOT / "research" / "results" / "metaschedule" / "best_pruned_config.json"
 DEFAULT_PRUNING_EXPERIMENTS = ROOT / "research" / "results" / "metaschedule" / "pruning_experiments.json"
+DEFAULT_COMPARISON_RESULTS = ROOT / "research" / "results" / "metaschedule" / "comparison_results.json"
 DEFAULT_ENV = ROOT / "services" / "data_aggregator" / ".env"
 IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_API_TIMEOUT = 300
@@ -24,12 +25,20 @@ DATASET_BERT = "bert-matmul"
 DATASET_BEST = "best-schedules"
 DATASET_BEST_PRUNED = "best-pruned-config"
 DATASET_PRUNING = "pruning-experiments"
-DATASET_CHOICES = (DATASET_BERT, DATASET_BEST, DATASET_BEST_PRUNED, DATASET_PRUNING)
+DATASET_COMPARISON = "comparison-results"
+DATASET_CHOICES = (
+    DATASET_BERT,
+    DATASET_BEST,
+    DATASET_BEST_PRUNED,
+    DATASET_PRUNING,
+    DATASET_COMPARISON,
+)
 
 BERT_TABLE_SUFFIX = "bert_matmul_results"
 BEST_SCHEDULES_TABLE_SUFFIX = "best_schedules"
 BEST_PRUNED_CONFIG_TABLE_SUFFIX = "best_pruned_config"
 PRUNING_EXPERIMENTS_TABLE_SUFFIX = "pruning_experiments"
+COMPARISON_RESULTS_TABLE_SUFFIX = "comparison_results"
 DEFAULT_PROFILE = "i5-1235U"
 PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9 _-]+$")
 TABLE_NAME_MAX = 63
@@ -42,6 +51,7 @@ PROFILE_MAX_LEN = max(
             len(BEST_SCHEDULES_TABLE_SUFFIX),
             len(BEST_PRUNED_CONFIG_TABLE_SUFFIX),
             len(PRUNING_EXPERIMENTS_TABLE_SUFFIX),
+            len(COMPARISON_RESULTS_TABLE_SUFFIX),
         )
         + 1
     ),
@@ -51,6 +61,7 @@ DEFAULT_BERT_API_URL = "http://localhost:3000/api/upload/bert_matmul_results"
 DEFAULT_BEST_SCHEDULES_API_URL = "http://localhost:3000/api/upload/best_schedules"
 DEFAULT_BEST_PRUNED_CONFIG_API_URL = "http://localhost:3000/api/upload/best_pruned_config"
 DEFAULT_PRUNING_EXPERIMENTS_API_URL = "http://localhost:3000/api/upload/pruning_experiments"
+DEFAULT_COMPARISON_RESULTS_API_URL = "http://localhost:3000/api/upload/comparison_results"
 
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -59,6 +70,7 @@ from research.workloads.common.data_aggregator_client import (  # noqa: E402
     resolve_profile as resolve_runtime_profile,
     upload_best_pruned_config,
     upload_best_schedules,
+    upload_comparison_results,
     upload_pruning_experiments,
     upload_results,
 )
@@ -385,6 +397,75 @@ def normalize_pruning_experiment_entry(
     }, None
 
 
+def normalize_comparison_result_entry(
+    entry: Dict[str, Any],
+    metadata: Dict[str, Any],
+    latest_compare: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    ts = parse_timestamp(entry.get("timestamp", entry.get("ts")))
+    if ts is None:
+        return None, "Invalid timestamp"
+
+    comparison_json = canonical_json(entry)
+    metadata_json = canonical_json(metadata)
+    latest_compare_json = canonical_json(latest_compare)
+    if comparison_json is None or metadata_json is None or latest_compare_json is None:
+        return None, "Invalid comparison payload"
+
+    compare_id_raw = entry.get("compare_id")
+    if isinstance(compare_id_raw, str) and compare_id_raw:
+        compare_id = compare_id_raw
+    else:
+        compare_id = hashlib.sha256(comparison_json.encode("utf-8")).hexdigest()[:16]
+
+    baseline = entry.get("baseline") if isinstance(entry.get("baseline"), dict) else {}
+    baseline_config = baseline.get("config") if isinstance(baseline.get("config"), dict) else {}
+    candidate = entry.get("candidate") if isinstance(entry.get("candidate"), dict) else {}
+    candidate_config = (
+        candidate.get("config") if isinstance(candidate.get("config"), dict) else {}
+    )
+    inputs = entry.get("inputs") if isinstance(entry.get("inputs"), dict) else {}
+    summary = entry.get("overall_summary") if isinstance(entry.get("overall_summary"), dict) else {}
+    tune_series = (
+        entry.get("config_tune_tir_series_time")
+        if isinstance(entry.get("config_tune_tir_series_time"), dict)
+        else {}
+    )
+
+    baseline_tune_time_sec = to_float(
+        summary.get("baseline_total_tune_tir_time_sec", tune_series.get("baseline_sec"))
+    )
+    candidate_tune_time_sec = to_float(
+        summary.get("candidate_total_tune_tir_time_sec", tune_series.get("candidate_sec"))
+    )
+
+    return {
+        "compare_id": compare_id,
+        "ts": ts,
+        "mode": str(entry.get("mode") or "compare"),
+        "baseline_config_name": str(baseline_config.get("name") or ""),
+        "baseline_state_token": str(baseline_config.get("state_token") or ""),
+        "candidate_config_name": str(candidate_config.get("name") or ""),
+        "candidate_state_token": str(candidate_config.get("state_token") or ""),
+        "benchmark_only": to_bool(inputs.get("benchmark_only")) or False,
+        "force_rerun": to_bool(inputs.get("force_rerun")) or False,
+        "task_count": to_int(inputs.get("task_count")),
+        "num_shapes": to_int(summary.get("num_shapes")),
+        "latency_retention": to_float(summary.get("latency_retention")),
+        "execution_time_reduction": to_float(summary.get("execution_time_reduction")),
+        "baseline_latency_geomean_us": to_float(summary.get("baseline_latency_geomean_us")),
+        "candidate_latency_geomean_us": to_float(summary.get("candidate_latency_geomean_us")),
+        "baseline_total_tune_tir_time_sec": baseline_tune_time_sec,
+        "candidate_total_tune_tir_time_sec": candidate_tune_time_sec,
+        "metadata": metadata,
+        "latest_compare": latest_compare,
+        "comparison": entry,
+        "metadata_json": metadata_json,
+        "latest_compare_json": latest_compare_json,
+        "comparison_json": comparison_json,
+    }, None
+
+
 def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[str]]:
     if not path.exists():
         return [], [f"File not found: {path}"]
@@ -442,6 +523,49 @@ def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[s
                 continue
 
             key = (normalized["run_id"],)
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append(normalized)
+
+        return rows, errors
+
+    if dataset == DATASET_COMPARISON:
+        if isinstance(payload, list):
+            comparisons = payload
+            metadata = {}
+            latest_compare = {}
+        elif isinstance(payload, dict):
+            comparisons_raw = payload.get("comparisons")
+            if isinstance(comparisons_raw, list):
+                comparisons = comparisons_raw
+            else:
+                comparisons = [payload]
+
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            latest_compare = (
+                payload.get("latest_compare")
+                if isinstance(payload.get("latest_compare"), dict)
+                else {}
+            )
+        else:
+            return [], ["comparison_results file must contain a JSON object or array"]
+
+        for idx, entry in enumerate(comparisons):
+            if not isinstance(entry, dict):
+                errors.append(f"Entry {idx}: not an object")
+                continue
+
+            normalized, error = normalize_comparison_result_entry(
+                entry,
+                metadata=metadata,
+                latest_compare=latest_compare,
+            )
+            if error:
+                errors.append(f"Entry {idx}: {error}")
+                continue
+
+            key = (normalized["compare_id"],)
             if key in seen:
                 continue
             seen.add(key)
@@ -645,6 +769,38 @@ def run_api_import(
                 "experiments": [row.get("experiment", {}) for row in chunk],
             }
             ok = upload_pruning_experiments(
+                payload,
+                url=api_url,
+                profile=profile,
+                dedupe=dedupe,
+                timeout=timeout,
+            )
+            if not ok:
+                effective_url = api_url or os.environ.get(env_url, default_url)
+                print(
+                    f"Upload failed after {total} rows. "
+                    f"Check {env_url} ({effective_url}) and that the server is running."
+                )
+                return 1
+            total += len(chunk)
+
+        print(f"Uploaded {total} rows via data_aggregator API.")
+        return 0
+
+    if dataset == DATASET_COMPARISON:
+        default_url = DEFAULT_COMPARISON_RESULTS_API_URL
+        env_url = "DATA_AGGREGATOR_COMPARISON_RESULTS_URL"
+
+        total = 0
+        for chunk in chunk_rows(rows, chunk_size):
+            metadata = chunk[0].get("metadata", {}) if chunk else {}
+            latest_compare = chunk[0].get("latest_compare", {}) if chunk else {}
+            payload = {
+                "metadata": metadata if isinstance(metadata, dict) else {},
+                "latest_compare": latest_compare if isinstance(latest_compare, dict) else {},
+                "comparisons": [row.get("comparison", {}) for row in chunk],
+            }
+            ok = upload_comparison_results(
                 payload,
                 url=api_url,
                 profile=profile,
@@ -916,6 +1072,63 @@ def ensure_direct_table(cur: Any, dataset: str, profile: str, table_name: str) -
         cur.execute(
             f"CREATE UNIQUE INDEX IF NOT EXISTS {qident(uniq_run_id)} "
             f"ON {qident(table_name)} (run_id)"
+        )
+        return
+
+    if dataset == DATASET_COMPARISON:
+        suffix = COMPARISON_RESULTS_TABLE_SUFFIX
+        rename_legacy_tables(cur, profile, suffix, table_name)
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {qident(table_name)} (
+                id uuid primary key default gen_random_uuid(),
+                ingested_at timestamptz not null default now(),
+                compare_id text not null,
+                ts timestamptz not null,
+                mode text not null,
+                baseline_config_name text not null default '',
+                baseline_state_token text not null default '',
+                candidate_config_name text not null default '',
+                candidate_state_token text not null default '',
+                benchmark_only boolean not null default false,
+                force_rerun boolean not null default false,
+                task_count integer,
+                num_shapes integer,
+                latency_retention double precision,
+                execution_time_reduction double precision,
+                baseline_latency_geomean_us double precision,
+                candidate_latency_geomean_us double precision,
+                baseline_total_tune_tir_time_sec double precision,
+                candidate_total_tune_tir_time_sec double precision,
+                metadata jsonb not null default '{{}}'::jsonb,
+                latest_compare jsonb not null default '{{}}'::jsonb,
+                comparison jsonb not null
+            )
+            """
+        )
+
+        index_key = f"{table_key(profile)}_{suffix}"
+        idx_ts = clamp_identifier(f"idx_{index_key}_ts")
+        idx_mode_ts = clamp_identifier(f"idx_{index_key}_mode_ts")
+        idx_retention = clamp_identifier(f"idx_{index_key}_retention")
+        uniq_compare_id = clamp_identifier(f"uniq_{index_key}_compare_id")
+
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_ts)} "
+            f"ON {qident(table_name)} (ts)"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_mode_ts)} "
+            f"ON {qident(table_name)} (mode, ts)"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_retention)} "
+            f"ON {qident(table_name)} (latency_retention)"
+        )
+        cur.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {qident(uniq_compare_id)} "
+            f"ON {qident(table_name)} (compare_id)"
         )
         return
 
@@ -1319,6 +1532,112 @@ def run_direct_import_pruning_experiments(
     return 0
 
 
+def run_direct_import_comparison_results(
+    rows: List[Dict[str, Any]],
+    db_url: str,
+    table_name: str,
+    profile: str,
+    chunk_size: int,
+    dedupe: bool,
+) -> int:
+    try:
+        import psycopg
+    except ImportError:
+        print("psycopg is required. Install with: pip install psycopg[binary]")
+        return 1
+
+    select_sql = f"""
+        SELECT 1
+        FROM {qident(table_name)}
+        WHERE compare_id = %(compare_id)s
+        LIMIT 1
+    """
+
+    insert_sql = f"""
+        INSERT INTO {qident(table_name)} (
+            compare_id,
+            ts,
+            mode,
+            baseline_config_name,
+            baseline_state_token,
+            candidate_config_name,
+            candidate_state_token,
+            benchmark_only,
+            force_rerun,
+            task_count,
+            num_shapes,
+            latency_retention,
+            execution_time_reduction,
+            baseline_latency_geomean_us,
+            candidate_latency_geomean_us,
+            baseline_total_tune_tir_time_sec,
+            candidate_total_tune_tir_time_sec,
+            metadata,
+            latest_compare,
+            comparison
+        )
+        VALUES (
+            %(compare_id)s,
+            %(ts)s,
+            %(mode)s,
+            %(baseline_config_name)s,
+            %(baseline_state_token)s,
+            %(candidate_config_name)s,
+            %(candidate_state_token)s,
+            %(benchmark_only)s,
+            %(force_rerun)s,
+            %(task_count)s,
+            %(num_shapes)s,
+            %(latency_retention)s,
+            %(execution_time_reduction)s,
+            %(baseline_latency_geomean_us)s,
+            %(candidate_latency_geomean_us)s,
+            %(baseline_total_tune_tir_time_sec)s,
+            %(candidate_total_tune_tir_time_sec)s,
+            %(metadata_json)s::jsonb,
+            %(latest_compare_json)s::jsonb,
+            %(comparison_json)s::jsonb
+        )
+    """
+
+    inserted = 0
+    skipped = 0
+    pending: List[Dict[str, Any]] = []
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                ensure_direct_table(cur, DATASET_COMPARISON, profile, table_name)
+                conn.commit()
+
+                for row in rows:
+                    if dedupe:
+                        cur.execute(select_sql, row)
+                        if cur.fetchone():
+                            skipped += 1
+                            continue
+
+                    pending.append(row)
+                    if len(pending) >= chunk_size:
+                        cur.executemany(insert_sql, pending)
+                        conn.commit()
+                        inserted += len(pending)
+                        pending.clear()
+
+                if pending:
+                    cur.executemany(insert_sql, pending)
+                    conn.commit()
+                    inserted += len(pending)
+    except psycopg.OperationalError as exc:
+        print(f"Connection failed: {exc}")
+        if "sslrootcert" in str(exc) or "certificate" in str(exc):
+            print("Hint: try --sslmode=require (Neon default) or --sslrootcert=system.")
+        return 1
+
+    print(f"Imported {inserted} rows. Skipped {skipped} duplicates.")
+    return 0
+
+
 def resolve_profile(cli_profile: Optional[str]) -> str:
     if cli_profile:
         return cli_profile
@@ -1395,7 +1714,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Import benchmark JSON files into Neon with profile-specific tables. "
-            "Commands: bert-matmul | best-schedules | best-pruned-config | pruning-experiments"
+            "Commands: bert-matmul | best-schedules | best-pruned-config | pruning-experiments | comparison-results"
         )
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -1423,6 +1742,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Import research/results/metaschedule/pruning_experiments.json",
     )
     add_common_args(pruning_parser, DEFAULT_PRUNING_EXPERIMENTS)
+
+    comparison_parser = subparsers.add_parser(
+        DATASET_COMPARISON,
+        help="Import research/results/metaschedule/comparison_results.json",
+    )
+    add_common_args(comparison_parser, DEFAULT_COMPARISON_RESULTS)
 
     return parser
 
@@ -1526,6 +1851,17 @@ def main() -> int:
     if dataset == DATASET_PRUNING:
         table_name = profile_table_name(normalized_profile, PRUNING_EXPERIMENTS_TABLE_SUFFIX)
         return run_direct_import_pruning_experiments(
+            rows,
+            db_url=db_url,
+            table_name=table_name,
+            profile=normalized_profile,
+            chunk_size=args.chunk_size,
+            dedupe=not args.no_dedupe,
+        )
+
+    if dataset == DATASET_COMPARISON:
+        table_name = profile_table_name(normalized_profile, COMPARISON_RESULTS_TABLE_SUFFIX)
+        return run_direct_import_comparison_results(
             rows,
             db_url=db_url,
             table_name=table_name,

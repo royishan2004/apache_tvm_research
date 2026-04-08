@@ -93,6 +93,7 @@ Each `profile` (CPU model) maps to its own table for each dataset:
 <profile_key>_best_schedules
 <profile_key>_best_pruned_config
 <profile_key>_pruning_experiments
+<profile_key>_comparison_results
 ```
 
 Notes:
@@ -108,6 +109,7 @@ Notes:
 - Legacy tables named `<profile> - best_schedules` are renamed to the new `<profile_key>_best_schedules` form.
 - Legacy tables named `<profile> - best_pruned_config` are renamed to the new `<profile_key>_best_pruned_config` form.
 - Legacy tables named `<profile> - pruning_experiments` are renamed to the new `<profile_key>_pruning_experiments` form.
+- Legacy tables named `<profile> - comparison_results` are renamed to the new `<profile_key>_comparison_results` form.
 
 
 #### Upload via Scalar Docs
@@ -117,6 +119,7 @@ Notes:
   - `POST /api/upload/best_schedules`
   - `POST /api/upload/best_pruned_config`
   - `POST /api/upload/pruning_experiments`
+  - `POST /api/upload/comparison_results`
 3) Click “Try it”, choose your `file`, set `profile` if needed, then “Execute”
 
 > Try it out ↓
@@ -137,6 +140,10 @@ curl -X POST http://localhost:3000/api/upload/best_pruned_config \
 curl -X POST http://localhost:3000/api/upload/pruning_experiments \
   -F "profile=i7-13700" \
   -F "file=@/path/to/pruning_experiments.json"
+
+curl -X POST http://localhost:3000/api/upload/comparison_results \
+  -F "profile=i7-13700" \
+  -F "file=@/path/to/comparison_results.json"
 ```
 
 
