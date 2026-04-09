@@ -697,19 +697,19 @@ The standard Apache TVM MetaSchedule auto-tuner runs an exhaustive evolutionary 
 The **80/20 Tuner** was developed to bridge this gap. The objective is to identify a minimal tuning configuration profile that recovers ~80-90% of the maximum achievable performance executing within only ~20% of the baseline computational tuning budget.
 
 ### Pruning Parameters & Considerations
-The tuner dynamically scales down the core dimensions of the MetaSchedule context. We categorize these into three primary tuning levers. The right-most column indicates the concise purpose of each parameter; the pruned column is annotated for the validation environment `i5-1235U`.
+The tuner dynamically scales down the core dimensions of the MetaSchedule context. We categorize these into three primary tuning levers. The right-most column indicates the concise purpose of each parameter; the pruned columns are annotated for the validation environments.
 
-| Pruning Category | Parameter | Baseline | 80/20 Pruned (i5-1235U) | Description | Impact / Reasoning |
-| :--- | :--- | :---: | :---: | :--- | :--- |
-| **Search Space Budget** | `max_trials_global` | 256 | **64** | Total number of candidate schedules the tuner will try. | Limits total schedule extraction and reduces overall tuning time. |
-|  | `max_trials_per_task` | 256 | **64** | Max candidate schedules tried per kernel/shape. | Strips out exhaustive tails per task and focuses effort on promising candidates. |
-|  | `population_size` | 512 | **384** | Number of candidate schedules kept each generation. | Reduces candidate diversity to speed up the search. |
-| **Measurement Fidelity** | `evaluator_number` | 5 | **2** | Number of timing repeats per measurement. | Fewer repeats reduce measurement time but can increase noise. |
-|  | `min_repeat_ms` | 100 | **40** | Minimum time (ms) for each timing run. | Shorter timing windows speed tuning but may be noisier. |
-|  | `rigorous_number` | 50 | **20** | Number of runs used for a thorough timing check. | Less strict validation shortens runtime while keeping some verification. |
-| **Evolutionary Search** | `genetic_num_iters` | 4 | **3** | Number of genetic search iterations (generations). | Fewer generations mean less exploration and shorter tuning time. |
-|  | `mutation_aggressiveness` | 0.85 | **0.80** | How aggressive mutations are during the search. | Lower values make the search more conservative under small budgets. |
-|  | `eps_greedy` | 0.05 | **0.08** | Probability of picking a random candidate to explore. | Slightly increases chance to discover useful candidates when population is smaller. |
+| Pruning Category | Parameter | Baseline | 80/20 Pruned (i5-1235U) | 80/20 Pruned (i7-13700) | Description | Impact / Reasoning |
+| :--- | :--- | :---: | :---: | :---: | :--- | :--- |
+| **Search Space Budget** | `max_trials_global` | 256 | **64** | **64** | Total number of candidate schedules the tuner will try. | Limits total schedule extraction and reduces overall tuning time. |
+|  | `max_trials_per_task` | 256 | **64** | **64** | Max candidate schedules tried per kernel/shape. | Strips out exhaustive tails per task and focuses effort on promising candidates. |
+|  | `population_size` | 512 | **384** | **384** | Number of candidate schedules kept each generation. | Reduces candidate diversity to speed up the search. |
+| **Measurement Fidelity** | `evaluator_number` | 5 | **2** | **4** | Number of timing repeats per measurement. | Fewer repeats reduce measurement time but can increase noise. |
+|  | `min_repeat_ms` | 100 | **40** | **80** | Minimum time (ms) for each timing run. | Shorter timing windows speed tuning but may be noisier. |
+|  | `rigorous_number` | 50 | **20** | **40** | Number of runs used for a thorough timing check. | Less strict validation shortens runtime while keeping some verification. |
+| **Evolutionary Search** | `genetic_num_iters` | 4 | **3** | **3** | Number of genetic search iterations (generations). | Fewer generations mean less exploration and shorter tuning time. |
+|  | `mutation_aggressiveness` | 0.85 | **0.80** | **0.80** | How aggressive mutations are during the search. | Lower values make the search more conservative under small budgets. |
+|  | `eps_greedy` | 0.05 | **0.08** | **0.08** | Probability of picking a random candidate to explore. | Slightly increases chance to discover useful candidates when population is smaller. |
 
 ### Methodology
 The execution is structured as an automated loop that iteratively shrinks the tuning search space to find the optimal trade-off point:
@@ -789,7 +789,33 @@ We compared the heavily pruned configuration against the exhaustive default Meta
 | **MLP-reduce** (`128×3072×768`) | 6380.27 | **5761.25** | **↓ 9.7%** | 0.252 | **0.055** |
 | **MLP-reduce** (`384×3072×768`) | 84429.80 | **18526.32** | **↓ 78.1%** | 0.198 | **0.056** |
 
-These results visually validate the overarching 80/20 constraint loop strategy: shedding generation overhead reduces exhaustive exploration and can trigger wild latency variances per iteration (e.g. `+235%` on batch size `384` for MLP-expand, juxtaposed with `-78%` on the identically sized MLP-reduce shape). Despite this volatility at the individual node level, the aggregated model geometry consistently uncovers actionable local minima across the full transformer architecture, vastly bridging the cost-to-performance barrier for rapid testing.
+#### Validation Environment: Intel Core i7-13700
+
+We also compared the optimal heavily pruned configuration on the Intel Core i7-13700 environment.
+
+| Metric | Baseline Tuning | 80/20 Pruned Candidate | Delta |
+| :--- | :--- | :--- | :--- |
+| **Total Tuning Time** | 20m 10s | 4m 43s | **↓ 76.6%** reduction |
+| **Geomean Latency (All Kernels)** | 1.761 ms | 1.685 ms | **↓ 4.3%** (Faster execution) |
+| **Overall Performance Retention** | 1.000x | **1.045x** | **+4.5%** speedup relative offset |
+
+*Note: Retention > 1.0x indicates the Pruned schedule mathematically outperformed the baseline due to noise-floor variance and reduced over-fitting.*
+
+**Shape-Wise Impact Breakdown (i7-13700)**
+
+| Kernel / Workload | Baseline Latency (us) | 80/20 Latency (us) | Latency Delta | Baseline Exec Time (s) | 80/20 Exec Time (s) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **QKV** (`16×768×768`) | 97.45 | **115.39** | **↑ 18.4%** | 0.173 | **0.035** |
+| **QKV** (`128×768×768`) | 774.49 | **1069.13** | **↑ 38.0%** | 0.111 | **0.030** |
+| **QKV** (`384×768×768`) | 2446.35 | **2654.19** | **↑ 8.5%** | 0.111 | **0.029** |
+| **MLP-expand** (`16×768×3072`) | 648.58 | **454.82** | **↓ 29.9%** | 0.116 | **0.035** |
+| **MLP-expand** (`128×768×3072`) | 7078.00 | **3945.26** | **↓ 44.3%** | 0.118 | **0.025** |
+| **MLP-expand** (`384×768×3072`) | 14494.26 | **10937.05** | **↓ 24.5%** | 0.132 | **0.042** |
+| **MLP-reduce** (`16×3072×768`) | 435.53 | **488.90** | **↑ 12.3%** | 0.122 | **0.024** |
+| **MLP-reduce** (`128×3072×768`) | 3763.97 | **4073.42** | **↑ 8.2%** | 0.121 | **0.031** |
+| **MLP-reduce** (`384×3072×768`) | 8110.21 | **8581.14** | **↑ 5.8%** | 0.131 | **0.037** |
+
+These results visually validate the overarching 80/20 constraint loop strategy: shedding generation overhead reduces exhaustive exploration and can trigger wild latency variances per iteration (e.g. `+235%` on batch size `384` for MLP-expand on i5, juxtaposed with `-78%` on the identically sized MLP-reduce shape). Despite this volatility at the individual node level, the aggregated model geometry consistently uncovers actionable local minima across the full transformer architecture, vastly bridging the cost-to-performance barrier for rapid testing.
 
 ---
 
