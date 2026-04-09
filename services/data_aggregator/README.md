@@ -93,7 +93,7 @@ Each `profile` (CPU model) maps to its own table for each dataset:
 <profile_key>_best_schedules
 <profile_key>_best_pruned_config
 <profile_key>_pruning_experiments
-<profile_key>_comparison_results
+<profile_key>_comp_summary
 ```
 
 Notes:
@@ -109,7 +109,8 @@ Notes:
 - Legacy tables named `<profile> - best_schedules` are renamed to the new `<profile_key>_best_schedules` form.
 - Legacy tables named `<profile> - best_pruned_config` are renamed to the new `<profile_key>_best_pruned_config` form.
 - Legacy tables named `<profile> - pruning_experiments` are renamed to the new `<profile_key>_pruning_experiments` form.
-- Legacy tables named `<profile> - comparison_results` are renamed to the new `<profile_key>_comparison_results` form.
+- Legacy tables named `<profile> - comp_summary` are renamed to the new `<profile_key>_comp_summary` form.
+- Legacy tables named `<profile_key>_comparison_results` are migrated to `<profile_key>_comp_summary`.
 
 
 #### Upload via Scalar Docs
@@ -145,6 +146,8 @@ curl -X POST http://localhost:3000/api/upload/comparison_results \
   -F "profile=i7-13700" \
   -F "file=@/path/to/comparison_results.json"
 ```
+
+`comparison_results` uploads refresh a fixed snapshot table (`<profile_key>_comp_summary`): rows are upserted by label (`shape:*` and `overall`) and stale labels are removed.
 
 
 --- 

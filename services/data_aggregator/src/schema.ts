@@ -159,41 +159,35 @@ export type PruningExperimentRow = typeof pruningExperiments.$inferSelect;
 export type NewPruningExperimentRow = typeof pruningExperiments.$inferInsert;
 
 export const comparisonResults = pgTable(
-  "comparison_results",
+  "comp_summary",
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
     ingestedAt: timestamp("ingested_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 
+    rowLabel: text("row_label").notNull(),
+    rowOrder: integer("row_order").notNull(),
+    rowKind: text("row_kind").notNull(),
     compareId: text("compare_id").notNull(),
-    ts: timestamp("ts", { withTimezone: true }).notNull(),
+    compareTs: timestamp("compare_ts", { withTimezone: true }).notNull(),
     mode: text("mode").notNull(),
 
-    baselineConfigName: text("baseline_config_name").notNull().default(""),
-    baselineStateToken: text("baseline_state_token").notNull().default(""),
-    candidateConfigName: text("candidate_config_name").notNull().default(""),
-    candidateStateToken: text("candidate_state_token").notNull().default(""),
-
-    benchmarkOnly: boolean("benchmark_only").notNull().default(false),
-    forceRerun: boolean("force_rerun").notNull().default(false),
-    taskCount: integer("task_count"),
+    shape: text("shape").notNull(),
     numShapes: integer("num_shapes"),
-
+    baselineLatencyUs: doublePrecision("baseline_latency_us"),
+    candidateLatencyUs: doublePrecision("candidate_latency_us"),
+    baselineTaskTuneTime: text("baseline_task_tune_time").notNull().default(""),
+    candidateTaskTuneTime: text("candidate_task_tune_time").notNull().default(""),
+    baselineTaskTuneTimeSec: doublePrecision("baseline_task_tune_time_sec"),
+    candidateTaskTuneTimeSec: doublePrecision("candidate_task_tune_time_sec"),
     latencyRetention: doublePrecision("latency_retention"),
-    executionTimeReduction: doublePrecision("execution_time_reduction"),
-    baselineLatencyGeomeanUs: doublePrecision("baseline_latency_geomean_us"),
-    candidateLatencyGeomeanUs: doublePrecision("candidate_latency_geomean_us"),
-    baselineTotalTuneTirTimeSec: doublePrecision("baseline_total_tune_tir_time_sec"),
-    candidateTotalTuneTirTimeSec: doublePrecision("candidate_total_tune_tir_time_sec"),
-
-    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
-    latestCompare: jsonb("latest_compare").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
-    comparison: jsonb("comparison").$type<Record<string, unknown>>().notNull(),
+    execTimeReduction: doublePrecision("exec_time_reduction"),
+    rowPayload: jsonb("row_payload").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
   },
   (table) => [
-    uniqueIndex("uniq_comparison_results_compare_id").on(table.compareId),
-    index("idx_comparison_results_ts").on(table.ts),
-    index("idx_comparison_results_mode_ts").on(table.mode, table.ts),
-    index("idx_comparison_results_retention").on(table.latencyRetention),
+    uniqueIndex("uniq_comp_summary_row_label").on(table.rowLabel),
+    index("idx_comp_summary_row_order").on(table.rowOrder),
+    index("idx_comp_summary_compare_ts").on(table.compareTs),
   ]
 )
 

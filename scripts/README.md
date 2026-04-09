@@ -9,7 +9,7 @@ Supported commands:
 - `best-schedules` -> imports `research/results/metaschedule/best_schedules.json` into `*_best_schedules`
 - `best-pruned-config` -> imports `research/results/metaschedule/best_pruned_config.json` into `*_best_pruned_config`
 - `pruning-experiments` -> imports `research/results/metaschedule/pruning_experiments.json` into `*_pruning_experiments`
-- `comparison-results` -> imports `research/results/metaschedule/comparison_results.json` into `*_comparison_results`
+- `comparison-results` -> imports `research/results/metaschedule/comparison_results.json` into `*_comp_summary`
 
 ### Requirements
 
@@ -64,3 +64,4 @@ Options:
 - API uploads default to 300 seconds for this script (override with `--timeout`).
 - Regular uploads (from `qkv_mlp_run`, `metaschedule_best_schedules`, and `metaschedule_8020_tuner`) default to 10 seconds via `DATA_AGGREGATOR_TIMEOUT`.
 - Direct mode uses the sanitized profile table name: lowercase, non-alphanumerics replaced by `_`, and a leading digit is prefixed with `p`.
+- `comparison-results` keeps a fixed snapshot table keyed by row label (`shape:*` + `overall`), so each import overwrites existing rows instead of appending history.

@@ -2008,6 +2008,28 @@ def _persist_comparison_result(
 	return compare_id
 
 
+def _build_pruning_upload_payload(store: Dict[str, Any], max_experiments: int = 64) -> Dict[str, Any]:
+	experiments = store.get("experiments", [])
+	if isinstance(experiments, list):
+		recent = experiments[-max_experiments:] if max_experiments > 0 else experiments
+	else:
+		recent = []
+
+	metadata = store.get("metadata", {})
+	if not isinstance(metadata, dict):
+		metadata = {}
+
+	latest_pruning_run = store.get("latest_pruning_run", {})
+	if not isinstance(latest_pruning_run, dict):
+		latest_pruning_run = {}
+
+	return {
+		"metadata": metadata,
+		"latest_pruning_run": latest_pruning_run,
+		"experiments": recent,
+	}
+
+
 def _safe_total_tuning_time_sec(experiment: Optional[Dict[str, Any]]) -> Optional[float]:
 	if not isinstance(experiment, dict):
 		return None
@@ -2552,10 +2574,17 @@ def main() -> int:
 			"timestamp": comparison.get("timestamp"),
 		}
 		_write_json(PRUNING_EXPERIMENTS_FILE, store)
-		upload_pruning_experiments(store, profile=profile)
+		upload_pruning_experiments(
+			_build_pruning_upload_payload(store, max_experiments=32),
+			profile=profile,
+			dedupe=True,
+			timeout=300,
+		)
 		upload_comparison_results(
 			_load_json(COMPARE_RESULTS_FILE, default={"metadata": {}, "comparisons": []}),
 			profile=profile,
+			dedupe=True,
+			timeout=300,
 		)
 
 		LOGGER.info("Comparison completed")
@@ -2640,8 +2669,13 @@ def main() -> int:
 
 	_write_json(BEST_PRUNED_CONFIG_FILE, best_payload)
 	_write_json(PRUNING_EXPERIMENTS_FILE, store)
-	upload_best_pruned_config(best_payload, profile=profile)
-	upload_pruning_experiments(store, profile=profile)
+	upload_best_pruned_config(best_payload, profile=profile, dedupe=True, timeout=300)
+	upload_pruning_experiments(
+		_build_pruning_upload_payload(store, max_experiments=128),
+		profile=profile,
+		dedupe=True,
+		timeout=300,
+	)
 
 	selected_agg = selected_exp.get("aggregate", {})
 	LOGGER.info("Selected best pruned configuration: %s", selected_exp.get("config_name"))

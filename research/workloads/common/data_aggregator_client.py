@@ -135,7 +135,7 @@ def upload_comparison_results(
     dedupe: bool = False,
     timeout: Optional[int] = None,
 ) -> bool:
-    """Upload comparison_results payload to the data aggregator."""
+    """Upload comparison_results payload to refresh the comp_summary snapshot."""
     if url is None:
         url = os.environ.get(
             "DATA_AGGREGATOR_COMPARISON_RESULTS_URL",

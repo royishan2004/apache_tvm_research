@@ -8,7 +8,8 @@ const TABLE_SUFFIX = 'bert_matmul_results';
 const BEST_SCHEDULES_TABLE_SUFFIX = 'best_schedules';
 const BEST_PRUNED_CONFIG_TABLE_SUFFIX = 'best_pruned_config';
 const PRUNING_EXPERIMENTS_TABLE_SUFFIX = 'pruning_experiments';
-const COMPARISON_RESULTS_TABLE_SUFFIX = 'comparison_results';
+const COMPARISON_RESULTS_TABLE_SUFFIX = 'comp_summary';
+const LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX = 'comparison_results';
 const LEGACY_DEFAULT_PROFILE = 'i5-1235U';
 const DEFAULT_PROFILE = detectDefaultProfile();
 const PROFILE_PATTERN = /^[A-Za-z0-9 _-]+$/;
@@ -590,8 +591,8 @@ const uploadComparisonResultsRoute = createRoute({
     method: 'post',
     path: '/api/upload/comparison_results',
     tags: ['ingestion'],
-    summary: 'Upload MetaSchedule comparison results',
-    description: 'Accepts comparison_results.json payload and stores profile-scoped comparison rows.',
+    summary: 'Upload MetaSchedule comparison summary snapshot',
+    description: 'Accepts comparison_results.json payload and stores profile-scoped comp_summary snapshot rows.',
     request: {
         body: {
             content: {
@@ -688,56 +689,21 @@ uploadRouter.openapi(uploadComparisonResultsRoute, async (c) => {
     catch {
         return c.json({ ok: false, error: 'Invalid JSON payload' }, 400);
     }
-    let comparisonsPayload = [];
-    let metadataPayload = {};
-    let latestComparePayload = {};
-    if (Array.isArray(parsed)) {
-        comparisonsPayload = parsed;
-    }
-    else if (isObjectRecord(parsed)) {
-        if (Array.isArray(parsed.comparisons)) {
-            comparisonsPayload = parsed.comparisons;
-        }
-        else {
-            comparisonsPayload = [parsed];
-        }
-        if (isObjectRecord(parsed.metadata)) {
-            metadataPayload = parsed.metadata;
-        }
-        if (isObjectRecord(parsed.latest_compare)) {
-            latestComparePayload = parsed.latest_compare;
-        }
-    }
-    else {
-        return c.json({ ok: false, error: 'Expected a JSON object or array' }, 400);
-    }
     const rows = [];
     const errors = [];
-    const chunkSize = 500;
-    let inserted = 0;
-    let duplicates = 0;
-    const { tableName } = await ensureComparisonResultsProfileTable(normalizedProfile);
-    const flushChunk = async () => {
-        if (rows.length === 0)
-            return;
-        const result = await insertComparisonResultRows(tableName, rows, dedupe);
-        inserted += result.inserted;
-        duplicates += result.duplicates;
-        rows.length = 0;
-    };
-    for (let i = 0; i < comparisonsPayload.length; i++) {
-        const entry = comparisonsPayload[i];
-        if (!isObjectRecord(entry)) {
-            errors.push({ index: i, error: 'Array element is not an object' });
-            continue;
-        }
-        parseComparisonResultEntry(entry, i, rows, errors, metadataPayload, latestComparePayload);
-        if (rows.length >= chunkSize) {
-            await flushChunk();
-        }
+    parseComparisonSummaryPayload(parsed, rows, errors);
+    if (rows.length === 0) {
+        return c.json({ ok: true, inserted: 0, duplicates: 0, rejected: errors.length, errors }, 200);
     }
-    await flushChunk();
-    return c.json({ ok: true, inserted, duplicates, rejected: errors.length, errors }, 200);
+    const { tableName } = await ensureComparisonResultsProfileTable(normalizedProfile);
+    const result = await insertComparisonResultRows(tableName, rows, dedupe);
+    return c.json({
+        ok: true,
+        inserted: result.inserted,
+        duplicates: result.duplicates,
+        rejected: errors.length,
+        errors,
+    }, 200);
 });
 function parseBool(value) {
     if (typeof value === 'boolean')
@@ -914,58 +880,147 @@ function parsePruningExperimentEntry(entry, index, rows, errors, metadataPayload
         experimentJson: canonicalJson(entry),
     });
 }
-function parseComparisonResultEntry(entry, index, rows, errors, metadataPayload, latestComparePayload) {
-    const ts = parseTimestamp(entry.timestamp ?? entry.ts);
-    if (!ts) {
-        errors.push({ index, error: 'Invalid timestamp' });
+function parseComparisonSummaryPayload(payload, rows, errors) {
+    if (Array.isArray(payload)) {
+        if (payload.length === 0) {
+            errors.push({ index: 0, error: 'No comparison entries found' });
+            return;
+        }
+        const last = payload[payload.length - 1];
+        if (!isObjectRecord(last)) {
+            errors.push({ index: payload.length - 1, error: 'Latest comparison entry is not an object' });
+            return;
+        }
+        appendComparisonSummaryRows(last, rows, errors);
         return;
     }
-    let compareId = typeof entry.compare_id === 'string' ? entry.compare_id : '';
+    if (!isObjectRecord(payload)) {
+        errors.push({ index: 0, error: 'Expected a JSON object or array' });
+        return;
+    }
+    if (isObjectRecord(payload.latest_compare)) {
+        appendComparisonSummaryRows(payload.latest_compare, rows, errors);
+        return;
+    }
+    if (Array.isArray(payload.comparisons) && payload.comparisons.length > 0) {
+        const last = payload.comparisons[payload.comparisons.length - 1];
+        if (!isObjectRecord(last)) {
+            errors.push({ index: payload.comparisons.length - 1, error: 'Latest comparison entry is not an object' });
+            return;
+        }
+        appendComparisonSummaryRows(last, rows, errors);
+        return;
+    }
+    if (Array.isArray(payload.shape_comparison_table)
+        || Array.isArray(payload.latency_comparison_table)
+        || isObjectRecord(payload.overall_summary)) {
+        appendComparisonSummaryRows(payload, rows, errors);
+        return;
+    }
+    errors.push({ index: 0, error: 'No latest comparison payload found' });
+}
+function appendComparisonSummaryRows(comparison, rows, errors) {
+    const compareTs = parseTimestamp(comparison.timestamp ?? comparison.ts);
+    if (!compareTs) {
+        errors.push({ index: 0, error: 'Invalid comparison timestamp' });
+        return;
+    }
+    let compareId = typeof comparison.compare_id === 'string' ? comparison.compare_id : '';
     if (!compareId) {
         compareId = createHash('sha256')
-            .update(canonicalJson(entry))
+            .update(canonicalJson(comparison))
             .digest('hex')
             .slice(0, 16);
     }
-    if (!compareId) {
-        errors.push({ index, error: 'Missing compare_id' });
-        return;
+    const mode = typeof comparison.mode === 'string' && comparison.mode
+        ? comparison.mode
+        : 'compare';
+    const shapeRowsRaw = Array.isArray(comparison.shape_comparison_table)
+        ? comparison.shape_comparison_table
+        : Array.isArray(comparison.latency_comparison_table)
+            ? comparison.latency_comparison_table
+            : [];
+    for (let i = 0; i < shapeRowsRaw.length; i++) {
+        const row = shapeRowsRaw[i];
+        if (!isObjectRecord(row)) {
+            errors.push({ index: i, error: 'Shape comparison row is not an object' });
+            continue;
+        }
+        const shape = buildShapeLabel(row, i);
+        const baselineTaskTuneTimeSec = finiteNumber(row.baseline_execution_time_sec ?? row.baseline_task_tune_time_sec);
+        const candidateTaskTuneTimeSec = finiteNumber(row.candidate_execution_time_sec ?? row.candidate_task_tune_time_sec);
+        rows.push({
+            rowLabel: `shape:${shape}`,
+            rowOrder: i,
+            rowKind: 'shape',
+            compareId,
+            compareTs,
+            mode,
+            shape,
+            numShapes: null,
+            baselineLatencyUs: finiteNumber(row.baseline_latency_us),
+            candidateLatencyUs: finiteNumber(row.candidate_latency_us),
+            baselineTaskTuneTime: formatDurationHuman(baselineTaskTuneTimeSec),
+            candidateTaskTuneTime: formatDurationHuman(candidateTaskTuneTimeSec),
+            baselineTaskTuneTimeSec,
+            candidateTaskTuneTimeSec,
+            latencyRetention: finiteNumber(row.retention ?? row.latency_retention),
+            execTimeReduction: finiteNumber(row.execution_time_reduction),
+            rowPayloadJson: canonicalJson(row),
+        });
     }
-    const baseline = isObjectRecord(entry.baseline) ? entry.baseline : {};
-    const baselineConfig = isObjectRecord(baseline.config) ? baseline.config : {};
-    const candidate = isObjectRecord(entry.candidate) ? entry.candidate : {};
-    const candidateConfig = isObjectRecord(candidate.config) ? candidate.config : {};
-    const inputs = isObjectRecord(entry.inputs) ? entry.inputs : {};
-    const summary = isObjectRecord(entry.overall_summary) ? entry.overall_summary : {};
-    const tuneSeries = isObjectRecord(entry.config_tune_tir_series_time)
-        ? entry.config_tune_tir_series_time
+    const summary = isObjectRecord(comparison.overall_summary)
+        ? comparison.overall_summary
         : {};
+    const baselineTotalSec = finiteNumber(summary.baseline_total_tune_tir_time_sec ?? summary.baseline_execution_time_sec);
+    const candidateTotalSec = finiteNumber(summary.candidate_total_tune_tir_time_sec ?? summary.candidate_execution_time_sec);
+    const baselineHuman = typeof summary.baseline_total_tune_tir_time_human === 'string'
+        ? summary.baseline_total_tune_tir_time_human
+        : formatDurationHuman(baselineTotalSec);
+    const candidateHuman = typeof summary.candidate_total_tune_tir_time_human === 'string'
+        ? summary.candidate_total_tune_tir_time_human
+        : formatDurationHuman(candidateTotalSec);
     rows.push({
+        rowLabel: 'overall',
+        rowOrder: shapeRowsRaw.length,
+        rowKind: 'overall',
         compareId,
-        ts,
-        mode: typeof entry.mode === 'string' && entry.mode ? entry.mode : 'compare',
-        baselineConfigName: typeof baselineConfig.name === 'string' ? baselineConfig.name : '',
-        baselineStateToken: typeof baselineConfig.state_token === 'string'
-            ? baselineConfig.state_token
-            : '',
-        candidateConfigName: typeof candidateConfig.name === 'string' ? candidateConfig.name : '',
-        candidateStateToken: typeof candidateConfig.state_token === 'string'
-            ? candidateConfig.state_token
-            : '',
-        benchmarkOnly: toOptionalBoolean(inputs.benchmark_only) ?? false,
-        forceRerun: toOptionalBoolean(inputs.force_rerun) ?? false,
-        taskCount: finiteInteger(inputs.task_count),
-        numShapes: finiteInteger(summary.num_shapes),
+        compareTs,
+        mode,
+        shape: 'overall',
+        numShapes: finiteInteger(summary.num_shapes) ?? shapeRowsRaw.length,
+        baselineLatencyUs: finiteNumber(summary.baseline_latency_geomean_us),
+        candidateLatencyUs: finiteNumber(summary.candidate_latency_geomean_us),
+        baselineTaskTuneTime: baselineHuman,
+        candidateTaskTuneTime: candidateHuman,
+        baselineTaskTuneTimeSec: baselineTotalSec,
+        candidateTaskTuneTimeSec: candidateTotalSec,
         latencyRetention: finiteNumber(summary.latency_retention),
-        executionTimeReduction: finiteNumber(summary.execution_time_reduction),
-        baselineLatencyGeomeanUs: finiteNumber(summary.baseline_latency_geomean_us),
-        candidateLatencyGeomeanUs: finiteNumber(summary.candidate_latency_geomean_us),
-        baselineTotalTuneTirTimeSec: finiteNumber(summary.baseline_total_tune_tir_time_sec ?? tuneSeries.baseline_sec),
-        candidateTotalTuneTirTimeSec: finiteNumber(summary.candidate_total_tune_tir_time_sec ?? tuneSeries.candidate_sec),
-        metadataJson: canonicalJson(metadataPayload),
-        latestCompareJson: canonicalJson(latestComparePayload),
-        comparisonJson: canonicalJson(entry),
+        execTimeReduction: finiteNumber(summary.execution_time_reduction),
+        rowPayloadJson: canonicalJson(summary),
     });
+}
+function buildShapeLabel(entry, index) {
+    const shapeRaw = typeof entry.shape === 'string' ? entry.shape.trim() : '';
+    if (shapeRaw)
+        return shapeRaw;
+    const kernel = typeof entry.kernel === 'string' ? entry.kernel.trim() : '';
+    const m = finiteInteger(entry.M ?? entry.m);
+    const k = finiteInteger(entry.K ?? entry.k);
+    const n = finiteInteger(entry.N ?? entry.n);
+    if (kernel && m != null) {
+        return `${kernel}[M=${m}]`;
+    }
+    return `shape_${index + 1}`;
+}
+function formatDurationHuman(seconds) {
+    if (seconds == null || !Number.isFinite(seconds)) {
+        return 'n/a';
+    }
+    const safeSeconds = Math.max(0, Number(seconds));
+    const mins = Math.floor(safeSeconds / 60);
+    const rem = safeSeconds - mins * 60;
+    return `${mins}m ${rem.toFixed(3)}s`;
 }
 function parseTimestamp(value) {
     if (value == null)
@@ -1080,6 +1135,17 @@ async function tableExists(tableName) {
       select 1
       from information_schema.tables
       where table_schema = 'public' and table_name = ${tableName}
+      limit 1
+    `);
+    return Array.isArray(result.rows) && result.rows.length > 0;
+}
+async function columnExists(tableName, columnName) {
+    const result = await execute(sql `
+      select 1
+      from information_schema.columns
+      where table_schema = 'public'
+        and table_name = ${tableName}
+        and column_name = ${columnName}
       limit 1
     `);
     return Array.isArray(result.rows) && result.rows.length > 0;
@@ -1365,53 +1431,220 @@ async function ensureComparisonResultsProfileTable(profile) {
             await execute(sql `alter table ${sql.identifier(COMPARISON_RESULTS_TABLE_SUFFIX)} rename to ${sql.identifier(tableName)}`);
         }
     }
+    const oldProfileTableName = profileTableNameForSuffix(profile, LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX);
+    if (oldProfileTableName !== tableName) {
+        const oldExists = await tableExists(oldProfileTableName);
+        const targetExists = await tableExists(tableName);
+        if (oldExists && !targetExists) {
+            await execute(sql `alter table ${sql.identifier(oldProfileTableName)} rename to ${sql.identifier(tableName)}`);
+        }
+    }
+    const oldLegacyProfileTableName = legacyProfileTableNameForSuffix(profile, LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX);
+    if (oldLegacyProfileTableName !== tableName) {
+        const oldLegacyExists = await tableExists(oldLegacyProfileTableName);
+        const targetExists = await tableExists(tableName);
+        if (oldLegacyExists && !targetExists) {
+            await execute(sql `alter table ${sql.identifier(oldLegacyProfileTableName)} rename to ${sql.identifier(tableName)}`);
+        }
+    }
+    if (profile === DEFAULT_PROFILE.toLowerCase()) {
+        const oldDefaultExists = await tableExists(LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX);
+        const targetExists = await tableExists(tableName);
+        if (oldDefaultExists && !targetExists) {
+            await execute(sql `alter table ${sql.identifier(LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX)} rename to ${sql.identifier(tableName)}`);
+        }
+    }
     await execute(sql `create extension if not exists pgcrypto`);
     await execute(sql `
     create table if not exists ${sql.identifier(tableName)} (
       id uuid primary key default gen_random_uuid(),
       ingested_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      row_label text not null,
+      row_order integer not null,
+      row_kind text not null,
       compare_id text not null,
-      ts timestamptz not null,
+      compare_ts timestamptz not null,
       mode text not null,
-      baseline_config_name text not null default '',
-      baseline_state_token text not null default '',
-      candidate_config_name text not null default '',
-      candidate_state_token text not null default '',
-      benchmark_only boolean not null default false,
-      force_rerun boolean not null default false,
-      task_count integer,
+      shape text not null,
       num_shapes integer,
+      baseline_latency_us double precision,
+      candidate_latency_us double precision,
+      baseline_task_tune_time text not null default '',
+      candidate_task_tune_time text not null default '',
+      baseline_task_tune_time_sec double precision,
+      candidate_task_tune_time_sec double precision,
       latency_retention double precision,
-      execution_time_reduction double precision,
-      baseline_latency_geomean_us double precision,
-      candidate_latency_geomean_us double precision,
-      baseline_total_tune_tir_time_sec double precision,
-      candidate_total_tune_tir_time_sec double precision,
-      metadata jsonb not null default '{}'::jsonb,
-      latest_compare jsonb not null default '{}'::jsonb,
-      comparison jsonb not null
+      exec_time_reduction double precision,
+      row_payload jsonb not null default '{}'::jsonb
     )
   `);
+    await execute(sql `
+    alter table ${sql.identifier(tableName)}
+      add column if not exists updated_at timestamptz default now(),
+      add column if not exists row_label text,
+      add column if not exists row_order integer,
+      add column if not exists row_kind text,
+      add column if not exists compare_id text,
+      add column if not exists compare_ts timestamptz,
+      add column if not exists mode text,
+      add column if not exists shape text,
+      add column if not exists num_shapes integer,
+      add column if not exists baseline_latency_us double precision,
+      add column if not exists candidate_latency_us double precision,
+      add column if not exists baseline_task_tune_time text,
+      add column if not exists candidate_task_tune_time text,
+      add column if not exists baseline_task_tune_time_sec double precision,
+      add column if not exists candidate_task_tune_time_sec double precision,
+      add column if not exists latency_retention double precision,
+      add column if not exists exec_time_reduction double precision,
+      add column if not exists row_payload jsonb default '{}'::jsonb
+  `);
+    if (await columnExists(tableName, 'ts')) {
+        await execute(sql `
+      update ${sql.identifier(tableName)}
+      set compare_ts = coalesce(compare_ts, ts)
+      where compare_ts is null
+    `);
+    }
+    if (await columnExists(tableName, 'execution_time_reduction')) {
+        await execute(sql `
+      update ${sql.identifier(tableName)}
+      set exec_time_reduction = coalesce(exec_time_reduction, execution_time_reduction)
+      where exec_time_reduction is null
+    `);
+    }
+    if (await columnExists(tableName, 'baseline_latency_geomean_us')) {
+        await execute(sql `
+      update ${sql.identifier(tableName)}
+      set baseline_latency_us = coalesce(baseline_latency_us, baseline_latency_geomean_us)
+      where baseline_latency_us is null
+    `);
+    }
+    if (await columnExists(tableName, 'candidate_latency_geomean_us')) {
+        await execute(sql `
+      update ${sql.identifier(tableName)}
+      set candidate_latency_us = coalesce(candidate_latency_us, candidate_latency_geomean_us)
+      where candidate_latency_us is null
+    `);
+    }
+    if (await columnExists(tableName, 'baseline_total_tune_tir_time_sec')) {
+        await execute(sql `
+      update ${sql.identifier(tableName)}
+      set baseline_task_tune_time_sec = coalesce(
+        baseline_task_tune_time_sec,
+        baseline_total_tune_tir_time_sec
+      )
+      where baseline_task_tune_time_sec is null
+    `);
+    }
+    if (await columnExists(tableName, 'candidate_total_tune_tir_time_sec')) {
+        await execute(sql `
+      update ${sql.identifier(tableName)}
+      set candidate_task_tune_time_sec = coalesce(
+        candidate_task_tune_time_sec,
+        candidate_total_tune_tir_time_sec
+      )
+      where candidate_task_tune_time_sec is null
+    `);
+    }
+    if (await columnExists(tableName, 'comparison')) {
+        await execute(sql `
+      update ${sql.identifier(tableName)}
+      set row_payload = coalesce(row_payload, comparison)
+      where row_payload is null
+    `);
+        await execute(sql `
+      alter table ${sql.identifier(tableName)}
+      alter column comparison set default '{}'::jsonb
+    `);
+        await execute(sql `
+      alter table ${sql.identifier(tableName)}
+      alter column comparison drop not null
+    `);
+    }
+    if (await columnExists(tableName, 'ts')) {
+        await execute(sql `
+      alter table ${sql.identifier(tableName)}
+      alter column ts set default now()
+    `);
+        await execute(sql `
+      alter table ${sql.identifier(tableName)}
+      alter column ts drop not null
+    `);
+    }
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set row_label = concat('legacy:', id::text)
+    where row_label is null or row_label = ''
+  `);
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set row_order = coalesce(row_order, 0)
+    where row_order is null
+  `);
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set row_kind = coalesce(nullif(row_kind, ''), 'legacy')
+    where row_kind is null or row_kind = ''
+  `);
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set shape = coalesce(nullif(shape, ''), 'legacy')
+    where shape is null or shape = ''
+  `);
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set compare_ts = coalesce(compare_ts, now())
+    where compare_ts is null
+  `);
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set baseline_task_tune_time = coalesce(nullif(baseline_task_tune_time, ''), 'n/a')
+    where baseline_task_tune_time is null or baseline_task_tune_time = ''
+  `);
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set candidate_task_tune_time = coalesce(nullif(candidate_task_tune_time, ''), 'n/a')
+    where candidate_task_tune_time is null or candidate_task_tune_time = ''
+  `);
+    await execute(sql `
+    alter table ${sql.identifier(tableName)}
+      drop column if exists baseline_config_name,
+      drop column if exists baseline_state_token,
+      drop column if exists candidate_config_name,
+      drop column if exists candidate_state_token,
+      drop column if exists benchmark_only,
+      drop column if exists force_rerun,
+      drop column if exists task_count,
+      drop column if exists execution_time_reduction,
+      drop column if exists baseline_latency_geomean_us,
+      drop column if exists candidate_latency_geomean_us,
+      drop column if exists baseline_total_tune_tir_time_sec,
+      drop column if exists candidate_total_tune_tir_time_sec,
+      drop column if exists metadata,
+      drop column if exists latest_compare,
+      drop column if exists comparison
+  `);
     const indexKey = `${key}_${COMPARISON_RESULTS_TABLE_SUFFIX}`;
-    const idxTs = clampIdentifier(`idx_${indexKey}_ts`);
-    const idxModeTs = clampIdentifier(`idx_${indexKey}_mode_ts`);
-    const idxRetention = clampIdentifier(`idx_${indexKey}_retention`);
-    const uniqCompareId = clampIdentifier(`uniq_${indexKey}_compare_id`);
+    const idxOrder = clampIdentifier(`idx_${indexKey}_row_order`);
+    const idxCompareTs = clampIdentifier(`idx_${indexKey}_compare_ts`);
+    const uniqRowLabel = clampIdentifier(`uniq_${indexKey}_row_label`);
+    const legacyCompareIdIndex = clampIdentifier(`uniq_${key}_${LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX}_compare_id`);
+    const currentCompareIdIndex = clampIdentifier(`uniq_${indexKey}_compare_id`);
+    await execute(sql `drop index if exists ${sql.identifier(legacyCompareIdIndex)}`);
+    await execute(sql `drop index if exists ${sql.identifier(currentCompareIdIndex)}`);
     await execute(sql `
-    create index if not exists ${sql.identifier(idxTs)}
-    on ${sql.identifier(tableName)} (ts)
+    create index if not exists ${sql.identifier(idxOrder)}
+    on ${sql.identifier(tableName)} (row_order)
   `);
     await execute(sql `
-    create index if not exists ${sql.identifier(idxModeTs)}
-    on ${sql.identifier(tableName)} (mode, ts)
+    create index if not exists ${sql.identifier(idxCompareTs)}
+    on ${sql.identifier(tableName)} (compare_ts)
   `);
     await execute(sql `
-    create index if not exists ${sql.identifier(idxRetention)}
-    on ${sql.identifier(tableName)} (latency_retention)
-  `);
-    await execute(sql `
-    create unique index if not exists ${sql.identifier(uniqCompareId)}
-    on ${sql.identifier(tableName)} (compare_id)
+    create unique index if not exists ${sql.identifier(uniqRowLabel)}
+    on ${sql.identifier(tableName)} (row_label)
   `);
     return { tableName, tableKey: key };
 }
@@ -1621,61 +1854,78 @@ async function insertComparisonResultRows(tableName, rows, dedupe) {
     if (rows.length === 0)
         return { inserted: 0, duplicates: 0 };
     const columnNames = [
+        'row_label',
+        'row_order',
+        'row_kind',
         'compare_id',
-        'ts',
+        'compare_ts',
         'mode',
-        'baseline_config_name',
-        'baseline_state_token',
-        'candidate_config_name',
-        'candidate_state_token',
-        'benchmark_only',
-        'force_rerun',
-        'task_count',
+        'shape',
         'num_shapes',
+        'baseline_latency_us',
+        'candidate_latency_us',
+        'baseline_task_tune_time',
+        'candidate_task_tune_time',
+        'baseline_task_tune_time_sec',
+        'candidate_task_tune_time_sec',
         'latency_retention',
-        'execution_time_reduction',
-        'baseline_latency_geomean_us',
-        'candidate_latency_geomean_us',
-        'baseline_total_tune_tir_time_sec',
-        'candidate_total_tune_tir_time_sec',
-        'metadata',
-        'latest_compare',
-        'comparison',
+        'exec_time_reduction',
+        'row_payload',
     ];
     const columnsSql = sql.join(columnNames.map((name) => sql.identifier(name)), sql `, `);
     const valuesSql = sql.join(rows.map((row) => sql `(
+          ${row.rowLabel},
+          ${row.rowOrder},
+          ${row.rowKind},
           ${row.compareId},
-          ${row.ts},
+          ${row.compareTs},
           ${row.mode},
-          ${row.baselineConfigName},
-          ${row.baselineStateToken},
-          ${row.candidateConfigName},
-          ${row.candidateStateToken},
-          ${row.benchmarkOnly},
-          ${row.forceRerun},
-          ${row.taskCount},
+          ${row.shape},
           ${row.numShapes},
+          ${row.baselineLatencyUs},
+          ${row.candidateLatencyUs},
+          ${row.baselineTaskTuneTime},
+          ${row.candidateTaskTuneTime},
+          ${row.baselineTaskTuneTimeSec},
+          ${row.candidateTaskTuneTimeSec},
           ${row.latencyRetention},
-          ${row.executionTimeReduction},
-          ${row.baselineLatencyGeomeanUs},
-          ${row.candidateLatencyGeomeanUs},
-          ${row.baselineTotalTuneTirTimeSec},
-          ${row.candidateTotalTuneTirTimeSec},
-          ${row.metadataJson}::jsonb,
-          ${row.latestCompareJson}::jsonb,
-          ${row.comparisonJson}::jsonb
+          ${row.execTimeReduction},
+          ${row.rowPayloadJson}::jsonb
         )`), sql `, `);
-    let query = sql `
+    const query = sql `
     insert into ${sql.identifier(tableName)} (${columnsSql})
     values ${valuesSql}
+    on conflict (row_label) do update set
+      row_order = excluded.row_order,
+      row_kind = excluded.row_kind,
+      compare_id = excluded.compare_id,
+      compare_ts = excluded.compare_ts,
+      mode = excluded.mode,
+      shape = excluded.shape,
+      num_shapes = excluded.num_shapes,
+      baseline_latency_us = excluded.baseline_latency_us,
+      candidate_latency_us = excluded.candidate_latency_us,
+      baseline_task_tune_time = excluded.baseline_task_tune_time,
+      candidate_task_tune_time = excluded.candidate_task_tune_time,
+      baseline_task_tune_time_sec = excluded.baseline_task_tune_time_sec,
+      candidate_task_tune_time_sec = excluded.candidate_task_tune_time_sec,
+      latency_retention = excluded.latency_retention,
+      exec_time_reduction = excluded.exec_time_reduction,
+      row_payload = excluded.row_payload,
+      updated_at = now()
+    returning 1
   `;
-    if (dedupe) {
-        query = query.append(sql ` on conflict (compare_id) do nothing returning 1`);
+    await execute(query);
+    const rowLabels = rows.map((row) => row.rowLabel);
+    if (rowLabels.length > 0) {
+        await execute(sql `
+      delete from ${sql.identifier(tableName)}
+      where row_label is null
+        or row_label not in (${sql.join(rowLabels.map((label) => sql `${label}`), sql `, `)})
+    `);
     }
-    const result = await execute(query);
     if (!dedupe) {
         return { inserted: rows.length, duplicates: 0 };
     }
-    const inserted = Array.isArray(result.rows) ? result.rows.length : 0;
-    return { inserted, duplicates: rows.length - inserted };
+    return { inserted: rows.length, duplicates: 0 };
 }

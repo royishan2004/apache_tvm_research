@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -38,7 +39,8 @@ BERT_TABLE_SUFFIX = "bert_matmul_results"
 BEST_SCHEDULES_TABLE_SUFFIX = "best_schedules"
 BEST_PRUNED_CONFIG_TABLE_SUFFIX = "best_pruned_config"
 PRUNING_EXPERIMENTS_TABLE_SUFFIX = "pruning_experiments"
-COMPARISON_RESULTS_TABLE_SUFFIX = "comparison_results"
+COMPARISON_RESULTS_TABLE_SUFFIX = "comp_summary"
+LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX = "comparison_results"
 DEFAULT_PROFILE = "i5-1235U"
 PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9 _-]+$")
 TABLE_NAME_MAX = 63
@@ -52,6 +54,7 @@ PROFILE_MAX_LEN = max(
             len(BEST_PRUNED_CONFIG_TABLE_SUFFIX),
             len(PRUNING_EXPERIMENTS_TABLE_SUFFIX),
             len(COMPARISON_RESULTS_TABLE_SUFFIX),
+            len(LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX),
         )
         + 1
     ),
@@ -397,73 +400,186 @@ def normalize_pruning_experiment_entry(
     }, None
 
 
-def normalize_comparison_result_entry(
-    entry: Dict[str, Any],
-    metadata: Dict[str, Any],
-    latest_compare: Dict[str, Any],
-) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    ts = parse_timestamp(entry.get("timestamp", entry.get("ts")))
-    if ts is None:
-        return None, "Invalid timestamp"
+def _format_duration_human(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "n/a"
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return "n/a"
+    if not math.isfinite(value):
+        return "n/a"
+    safe = max(0.0, value)
+    mins = int(safe // 60)
+    rem = safe - mins * 60
+    return f"{mins}m {rem:.3f}s"
 
-    comparison_json = canonical_json(entry)
-    metadata_json = canonical_json(metadata)
-    latest_compare_json = canonical_json(latest_compare)
-    if comparison_json is None or metadata_json is None or latest_compare_json is None:
-        return None, "Invalid comparison payload"
 
-    compare_id_raw = entry.get("compare_id")
+def _extract_latest_comparison_payload(payload: Any) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    if isinstance(payload, list):
+        if not payload:
+            return None, "comparison_results payload is empty"
+        last = payload[-1]
+        if not isinstance(last, dict):
+            return None, "Latest comparison entry is not an object"
+        return last, None
+
+    if not isinstance(payload, dict):
+        return None, "comparison_results file must contain a JSON object or array"
+
+    latest_compare = payload.get("latest_compare")
+    if isinstance(latest_compare, dict):
+        return latest_compare, None
+
+    comparisons = payload.get("comparisons")
+    if isinstance(comparisons, list) and comparisons:
+        last = comparisons[-1]
+        if not isinstance(last, dict):
+            return None, "Latest comparison entry is not an object"
+        return last, None
+
+    if (
+        isinstance(payload.get("overall_summary"), dict)
+        or isinstance(payload.get("shape_comparison_table"), list)
+        or isinstance(payload.get("latency_comparison_table"), list)
+    ):
+        return payload, None
+
+    return None, "No latest comparison payload found"
+
+
+def _build_shape_label(entry: Dict[str, Any], index: int) -> str:
+    shape = entry.get("shape")
+    if isinstance(shape, str) and shape.strip():
+        return shape.strip()
+
+    kernel = entry.get("kernel")
+    m_val = to_int(entry.get("M", entry.get("m")))
+    if isinstance(kernel, str) and kernel and m_val is not None:
+        return f"{kernel}[M={m_val}]"
+
+    return f"shape_{index + 1}"
+
+
+def normalize_comparison_summary_rows(
+    comparison: Dict[str, Any],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    errors: List[str] = []
+    rows: List[Dict[str, Any]] = []
+
+    compare_ts = parse_timestamp(comparison.get("timestamp", comparison.get("ts")))
+    if compare_ts is None:
+        return [], ["Invalid comparison timestamp"]
+
+    comparison_json = canonical_json(comparison)
+    if comparison_json is None:
+        return [], ["Invalid comparison payload"]
+
+    compare_id_raw = comparison.get("compare_id")
     if isinstance(compare_id_raw, str) and compare_id_raw:
         compare_id = compare_id_raw
     else:
         compare_id = hashlib.sha256(comparison_json.encode("utf-8")).hexdigest()[:16]
 
-    baseline = entry.get("baseline") if isinstance(entry.get("baseline"), dict) else {}
-    baseline_config = baseline.get("config") if isinstance(baseline.get("config"), dict) else {}
-    candidate = entry.get("candidate") if isinstance(entry.get("candidate"), dict) else {}
-    candidate_config = (
-        candidate.get("config") if isinstance(candidate.get("config"), dict) else {}
+    mode = str(comparison.get("mode") or "compare")
+
+    shape_rows_raw = comparison.get("shape_comparison_table")
+    if not isinstance(shape_rows_raw, list):
+        shape_rows_raw = comparison.get("latency_comparison_table")
+    if not isinstance(shape_rows_raw, list):
+        shape_rows_raw = []
+
+    for idx, entry_raw in enumerate(shape_rows_raw):
+        if not isinstance(entry_raw, dict):
+            errors.append(f"Shape row {idx}: not an object")
+            continue
+
+        shape_label = _build_shape_label(entry_raw, idx)
+        baseline_tune_sec = to_float(
+            entry_raw.get("baseline_execution_time_sec", entry_raw.get("baseline_task_tune_time_sec"))
+        )
+        candidate_tune_sec = to_float(
+            entry_raw.get("candidate_execution_time_sec", entry_raw.get("candidate_task_tune_time_sec"))
+        )
+        row_payload_json = canonical_json(entry_raw)
+        if row_payload_json is None:
+            row_payload_json = "{}"
+
+        rows.append(
+            {
+                "row_label": f"shape:{shape_label}",
+                "row_order": idx,
+                "row_kind": "shape",
+                "compare_id": compare_id,
+                "compare_ts": compare_ts,
+                "mode": mode,
+                "shape": shape_label,
+                "num_shapes": None,
+                "baseline_latency_us": to_float(entry_raw.get("baseline_latency_us")),
+                "candidate_latency_us": to_float(entry_raw.get("candidate_latency_us")),
+                "baseline_task_tune_time": _format_duration_human(baseline_tune_sec),
+                "candidate_task_tune_time": _format_duration_human(candidate_tune_sec),
+                "baseline_task_tune_time_sec": baseline_tune_sec,
+                "candidate_task_tune_time_sec": candidate_tune_sec,
+                "latency_retention": to_float(
+                    entry_raw.get("retention", entry_raw.get("latency_retention"))
+                ),
+                "exec_time_reduction": to_float(entry_raw.get("execution_time_reduction")),
+                "row_payload": entry_raw,
+                "row_payload_json": row_payload_json,
+            }
+        )
+
+    summary_raw = comparison.get("overall_summary")
+    if not isinstance(summary_raw, dict):
+        errors.append("Missing overall_summary in latest comparison payload")
+        return rows, errors
+
+    baseline_total_sec = to_float(
+        summary_raw.get("baseline_total_tune_tir_time_sec", summary_raw.get("baseline_execution_time_sec"))
     )
-    inputs = entry.get("inputs") if isinstance(entry.get("inputs"), dict) else {}
-    summary = entry.get("overall_summary") if isinstance(entry.get("overall_summary"), dict) else {}
-    tune_series = (
-        entry.get("config_tune_tir_series_time")
-        if isinstance(entry.get("config_tune_tir_series_time"), dict)
-        else {}
+    candidate_total_sec = to_float(
+        summary_raw.get("candidate_total_tune_tir_time_sec", summary_raw.get("candidate_execution_time_sec"))
+    )
+    baseline_human = summary_raw.get("baseline_total_tune_tir_time_human")
+    candidate_human = summary_raw.get("candidate_total_tune_tir_time_human")
+
+    row_payload_json = canonical_json(summary_raw)
+    if row_payload_json is None:
+        row_payload_json = "{}"
+
+    rows.append(
+        {
+            "row_label": "overall",
+            "row_order": len(rows),
+            "row_kind": "overall",
+            "compare_id": compare_id,
+            "compare_ts": compare_ts,
+            "mode": mode,
+            "shape": "overall",
+            "num_shapes": to_int(summary_raw.get("num_shapes")) or len(shape_rows_raw),
+            "baseline_latency_us": to_float(summary_raw.get("baseline_latency_geomean_us")),
+            "candidate_latency_us": to_float(summary_raw.get("candidate_latency_geomean_us")),
+            "baseline_task_tune_time": (
+                baseline_human
+                if isinstance(baseline_human, str) and baseline_human
+                else _format_duration_human(baseline_total_sec)
+            ),
+            "candidate_task_tune_time": (
+                candidate_human
+                if isinstance(candidate_human, str) and candidate_human
+                else _format_duration_human(candidate_total_sec)
+            ),
+            "baseline_task_tune_time_sec": baseline_total_sec,
+            "candidate_task_tune_time_sec": candidate_total_sec,
+            "latency_retention": to_float(summary_raw.get("latency_retention")),
+            "exec_time_reduction": to_float(summary_raw.get("execution_time_reduction")),
+            "row_payload": summary_raw,
+            "row_payload_json": row_payload_json,
+        }
     )
 
-    baseline_tune_time_sec = to_float(
-        summary.get("baseline_total_tune_tir_time_sec", tune_series.get("baseline_sec"))
-    )
-    candidate_tune_time_sec = to_float(
-        summary.get("candidate_total_tune_tir_time_sec", tune_series.get("candidate_sec"))
-    )
-
-    return {
-        "compare_id": compare_id,
-        "ts": ts,
-        "mode": str(entry.get("mode") or "compare"),
-        "baseline_config_name": str(baseline_config.get("name") or ""),
-        "baseline_state_token": str(baseline_config.get("state_token") or ""),
-        "candidate_config_name": str(candidate_config.get("name") or ""),
-        "candidate_state_token": str(candidate_config.get("state_token") or ""),
-        "benchmark_only": to_bool(inputs.get("benchmark_only")) or False,
-        "force_rerun": to_bool(inputs.get("force_rerun")) or False,
-        "task_count": to_int(inputs.get("task_count")),
-        "num_shapes": to_int(summary.get("num_shapes")),
-        "latency_retention": to_float(summary.get("latency_retention")),
-        "execution_time_reduction": to_float(summary.get("execution_time_reduction")),
-        "baseline_latency_geomean_us": to_float(summary.get("baseline_latency_geomean_us")),
-        "candidate_latency_geomean_us": to_float(summary.get("candidate_latency_geomean_us")),
-        "baseline_total_tune_tir_time_sec": baseline_tune_time_sec,
-        "candidate_total_tune_tir_time_sec": candidate_tune_time_sec,
-        "metadata": metadata,
-        "latest_compare": latest_compare,
-        "comparison": entry,
-        "metadata_json": metadata_json,
-        "latest_compare_json": latest_compare_json,
-        "comparison_json": comparison_json,
-    }, None
+    return rows, errors
 
 
 def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[str]]:
@@ -531,45 +647,24 @@ def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[s
         return rows, errors
 
     if dataset == DATASET_COMPARISON:
-        if isinstance(payload, list):
-            comparisons = payload
-            metadata = {}
-            latest_compare = {}
-        elif isinstance(payload, dict):
-            comparisons_raw = payload.get("comparisons")
-            if isinstance(comparisons_raw, list):
-                comparisons = comparisons_raw
-            else:
-                comparisons = [payload]
+        latest_comparison, latest_error = _extract_latest_comparison_payload(payload)
+        if latest_error:
+            return [], [latest_error]
+        if latest_comparison is None:
+            return [], ["No latest comparison payload found"]
 
-            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
-            latest_compare = (
-                payload.get("latest_compare")
-                if isinstance(payload.get("latest_compare"), dict)
-                else {}
-            )
-        else:
-            return [], ["comparison_results file must contain a JSON object or array"]
+        normalized_rows, row_errors = normalize_comparison_summary_rows(latest_comparison)
+        errors.extend(row_errors)
 
-        for idx, entry in enumerate(comparisons):
-            if not isinstance(entry, dict):
-                errors.append(f"Entry {idx}: not an object")
-                continue
-
-            normalized, error = normalize_comparison_result_entry(
-                entry,
-                metadata=metadata,
-                latest_compare=latest_compare,
-            )
-            if error:
-                errors.append(f"Entry {idx}: {error}")
-                continue
-
-            key = (normalized["compare_id"],)
+        for row in normalized_rows:
+            key = (row.get("row_label"),)
             if key in seen:
                 continue
             seen.add(key)
-            rows.append(normalized)
+            rows.append(row)
+
+        if rows:
+            rows[0]["source_payload"] = payload
 
         return rows, errors
 
@@ -791,32 +886,27 @@ def run_api_import(
         default_url = DEFAULT_COMPARISON_RESULTS_API_URL
         env_url = "DATA_AGGREGATOR_COMPARISON_RESULTS_URL"
 
-        total = 0
-        for chunk in chunk_rows(rows, chunk_size):
-            metadata = chunk[0].get("metadata", {}) if chunk else {}
-            latest_compare = chunk[0].get("latest_compare", {}) if chunk else {}
-            payload = {
-                "metadata": metadata if isinstance(metadata, dict) else {},
-                "latest_compare": latest_compare if isinstance(latest_compare, dict) else {},
-                "comparisons": [row.get("comparison", {}) for row in chunk],
-            }
-            ok = upload_comparison_results(
-                payload,
-                url=api_url,
-                profile=profile,
-                dedupe=dedupe,
-                timeout=timeout,
-            )
-            if not ok:
-                effective_url = api_url or os.environ.get(env_url, default_url)
-                print(
-                    f"Upload failed after {total} rows. "
-                    f"Check {env_url} ({effective_url}) and that the server is running."
-                )
-                return 1
-            total += len(chunk)
+        payload = rows[0].get("source_payload") if rows else None
+        if payload is None:
+            print("No source comparison_results payload available for API upload.")
+            return 1
 
-        print(f"Uploaded {total} rows via data_aggregator API.")
+        ok = upload_comparison_results(
+            payload,
+            url=api_url,
+            profile=profile,
+            dedupe=dedupe,
+            timeout=timeout,
+        )
+        if not ok:
+            effective_url = api_url or os.environ.get(env_url, default_url)
+            print(
+                "Upload failed. "
+                f"Check {env_url} ({effective_url}) and that the server is running."
+            )
+            return 1
+
+        print(f"Uploaded {len(rows)} rows via data_aggregator API.")
         return 0
 
     print(f"Unsupported dataset: {dataset}")
@@ -838,6 +928,21 @@ def table_exists(cur: Any, table_name: str) -> bool:
         (table_name,),
     )
     return cur.fetchone() is not None
+
+
+def column_exists(cur: Any, table_name: str, column_name: str) -> bool:
+        cur.execute(
+                """
+                select 1
+                from information_schema.columns
+                where table_schema = 'public'
+                    and table_name = %s
+                    and column_name = %s
+                limit 1
+                """,
+                (table_name, column_name),
+        )
+        return cur.fetchone() is not None
 
 
 def rename_legacy_tables(cur: Any, profile: str, suffix: str, table_name: str) -> None:
@@ -877,6 +982,177 @@ def ensure_direct_table(cur: Any, dataset: str, profile: str, table_name: str) -
                 iteration integer,
                 total_iterations integer
             )
+            """
+        )
+
+        cur.execute(
+            f"""
+            ALTER TABLE {qident(table_name)}
+                ADD COLUMN IF NOT EXISTS updated_at timestamptz default now(),
+                ADD COLUMN IF NOT EXISTS row_label text,
+                ADD COLUMN IF NOT EXISTS row_order integer,
+                ADD COLUMN IF NOT EXISTS row_kind text,
+                ADD COLUMN IF NOT EXISTS compare_id text,
+                ADD COLUMN IF NOT EXISTS compare_ts timestamptz,
+                ADD COLUMN IF NOT EXISTS mode text,
+                ADD COLUMN IF NOT EXISTS shape text,
+                ADD COLUMN IF NOT EXISTS num_shapes integer,
+                ADD COLUMN IF NOT EXISTS baseline_latency_us double precision,
+                ADD COLUMN IF NOT EXISTS candidate_latency_us double precision,
+                ADD COLUMN IF NOT EXISTS baseline_task_tune_time text,
+                ADD COLUMN IF NOT EXISTS candidate_task_tune_time text,
+                ADD COLUMN IF NOT EXISTS baseline_task_tune_time_sec double precision,
+                ADD COLUMN IF NOT EXISTS candidate_task_tune_time_sec double precision,
+                ADD COLUMN IF NOT EXISTS latency_retention double precision,
+                ADD COLUMN IF NOT EXISTS exec_time_reduction double precision,
+                ADD COLUMN IF NOT EXISTS row_payload jsonb default '{{}}'::jsonb
+            """
+        )
+
+        if column_exists(cur, table_name, "ts"):
+            cur.execute(
+                f"""
+                UPDATE {qident(table_name)}
+                SET compare_ts = COALESCE(compare_ts, ts)
+                WHERE compare_ts IS NULL
+                """
+            )
+        if column_exists(cur, table_name, "execution_time_reduction"):
+            cur.execute(
+                f"""
+                UPDATE {qident(table_name)}
+                SET exec_time_reduction = COALESCE(exec_time_reduction, execution_time_reduction)
+                WHERE exec_time_reduction IS NULL
+                """
+            )
+        if column_exists(cur, table_name, "baseline_latency_geomean_us"):
+            cur.execute(
+                f"""
+                UPDATE {qident(table_name)}
+                SET baseline_latency_us = COALESCE(baseline_latency_us, baseline_latency_geomean_us)
+                WHERE baseline_latency_us IS NULL
+                """
+            )
+        if column_exists(cur, table_name, "candidate_latency_geomean_us"):
+            cur.execute(
+                f"""
+                UPDATE {qident(table_name)}
+                SET candidate_latency_us = COALESCE(candidate_latency_us, candidate_latency_geomean_us)
+                WHERE candidate_latency_us IS NULL
+                """
+            )
+        if column_exists(cur, table_name, "baseline_total_tune_tir_time_sec"):
+            cur.execute(
+                f"""
+                UPDATE {qident(table_name)}
+                SET baseline_task_tune_time_sec = COALESCE(
+                    baseline_task_tune_time_sec,
+                    baseline_total_tune_tir_time_sec
+                )
+                WHERE baseline_task_tune_time_sec IS NULL
+                """
+            )
+        if column_exists(cur, table_name, "candidate_total_tune_tir_time_sec"):
+            cur.execute(
+                f"""
+                UPDATE {qident(table_name)}
+                SET candidate_task_tune_time_sec = COALESCE(
+                    candidate_task_tune_time_sec,
+                    candidate_total_tune_tir_time_sec
+                )
+                WHERE candidate_task_tune_time_sec IS NULL
+                """
+            )
+        if column_exists(cur, table_name, "comparison"):
+            cur.execute(
+                f"""
+                UPDATE {qident(table_name)}
+                SET row_payload = COALESCE(row_payload, comparison)
+                WHERE row_payload IS NULL
+                """
+            )
+            cur.execute(
+                f"ALTER TABLE {qident(table_name)} ALTER COLUMN comparison SET DEFAULT '{{}}'::jsonb"
+            )
+            cur.execute(
+                f"ALTER TABLE {qident(table_name)} ALTER COLUMN comparison DROP NOT NULL"
+            )
+        if column_exists(cur, table_name, "ts"):
+            cur.execute(
+                f"ALTER TABLE {qident(table_name)} ALTER COLUMN ts SET DEFAULT now()"
+            )
+            cur.execute(
+                f"ALTER TABLE {qident(table_name)} ALTER COLUMN ts DROP NOT NULL"
+            )
+
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET row_label = CONCAT('legacy:', id::text)
+            WHERE row_label IS NULL OR row_label = ''
+            """
+        )
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET row_order = COALESCE(row_order, 0)
+            WHERE row_order IS NULL
+            """
+        )
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET row_kind = COALESCE(NULLIF(row_kind, ''), 'legacy')
+            WHERE row_kind IS NULL OR row_kind = ''
+            """
+        )
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET shape = COALESCE(NULLIF(shape, ''), 'legacy')
+            WHERE shape IS NULL OR shape = ''
+            """
+        )
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET compare_ts = COALESCE(compare_ts, now())
+            WHERE compare_ts IS NULL
+            """
+        )
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET baseline_task_tune_time = COALESCE(NULLIF(baseline_task_tune_time, ''), 'n/a')
+            WHERE baseline_task_tune_time IS NULL OR baseline_task_tune_time = ''
+            """
+        )
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET candidate_task_tune_time = COALESCE(NULLIF(candidate_task_tune_time, ''), 'n/a')
+            WHERE candidate_task_tune_time IS NULL OR candidate_task_tune_time = ''
+            """
+        )
+
+        cur.execute(
+            f"""
+            ALTER TABLE {qident(table_name)}
+                DROP COLUMN IF EXISTS baseline_config_name,
+                DROP COLUMN IF EXISTS baseline_state_token,
+                DROP COLUMN IF EXISTS candidate_config_name,
+                DROP COLUMN IF EXISTS candidate_state_token,
+                DROP COLUMN IF EXISTS benchmark_only,
+                DROP COLUMN IF EXISTS force_rerun,
+                DROP COLUMN IF EXISTS task_count,
+                DROP COLUMN IF EXISTS execution_time_reduction,
+                DROP COLUMN IF EXISTS baseline_latency_geomean_us,
+                DROP COLUMN IF EXISTS candidate_latency_geomean_us,
+                DROP COLUMN IF EXISTS baseline_total_tune_tir_time_sec,
+                DROP COLUMN IF EXISTS candidate_total_tune_tir_time_sec,
+                DROP COLUMN IF EXISTS metadata,
+                DROP COLUMN IF EXISTS latest_compare,
+                DROP COLUMN IF EXISTS comparison
             """
         )
 
@@ -1078,57 +1354,83 @@ def ensure_direct_table(cur: Any, dataset: str, profile: str, table_name: str) -
     if dataset == DATASET_COMPARISON:
         suffix = COMPARISON_RESULTS_TABLE_SUFFIX
         rename_legacy_tables(cur, profile, suffix, table_name)
+
+        old_profile_table = profile_table_name(profile, LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX)
+        if old_profile_table != table_name:
+            if table_exists(cur, old_profile_table) and not table_exists(cur, table_name):
+                cur.execute(f"ALTER TABLE {qident(old_profile_table)} RENAME TO {qident(table_name)}")
+
+        old_legacy_profile_table = legacy_profile_table_name(
+            profile,
+            LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX,
+        )
+        if old_legacy_profile_table != table_name:
+            if table_exists(cur, old_legacy_profile_table) and not table_exists(cur, table_name):
+                cur.execute(
+                    f"ALTER TABLE {qident(old_legacy_profile_table)} RENAME TO {qident(table_name)}"
+                )
+
+        if profile == DEFAULT_PROFILE.lower():
+            if (
+                table_exists(cur, LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX)
+                and not table_exists(cur, table_name)
+            ):
+                cur.execute(
+                    f"ALTER TABLE {qident(LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX)} "
+                    f"RENAME TO {qident(table_name)}"
+                )
+
         cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
         cur.execute(
             f"""
             CREATE TABLE IF NOT EXISTS {qident(table_name)} (
                 id uuid primary key default gen_random_uuid(),
                 ingested_at timestamptz not null default now(),
+                updated_at timestamptz not null default now(),
+                row_label text not null,
+                row_order integer not null,
+                row_kind text not null,
                 compare_id text not null,
-                ts timestamptz not null,
+                compare_ts timestamptz not null,
                 mode text not null,
-                baseline_config_name text not null default '',
-                baseline_state_token text not null default '',
-                candidate_config_name text not null default '',
-                candidate_state_token text not null default '',
-                benchmark_only boolean not null default false,
-                force_rerun boolean not null default false,
-                task_count integer,
+                shape text not null,
                 num_shapes integer,
+                baseline_latency_us double precision,
+                candidate_latency_us double precision,
+                baseline_task_tune_time text not null default '',
+                candidate_task_tune_time text not null default '',
+                baseline_task_tune_time_sec double precision,
+                candidate_task_tune_time_sec double precision,
                 latency_retention double precision,
-                execution_time_reduction double precision,
-                baseline_latency_geomean_us double precision,
-                candidate_latency_geomean_us double precision,
-                baseline_total_tune_tir_time_sec double precision,
-                candidate_total_tune_tir_time_sec double precision,
-                metadata jsonb not null default '{{}}'::jsonb,
-                latest_compare jsonb not null default '{{}}'::jsonb,
-                comparison jsonb not null
+                exec_time_reduction double precision,
+                row_payload jsonb not null default '{{}}'::jsonb
             )
             """
         )
 
         index_key = f"{table_key(profile)}_{suffix}"
-        idx_ts = clamp_identifier(f"idx_{index_key}_ts")
-        idx_mode_ts = clamp_identifier(f"idx_{index_key}_mode_ts")
-        idx_retention = clamp_identifier(f"idx_{index_key}_retention")
-        uniq_compare_id = clamp_identifier(f"uniq_{index_key}_compare_id")
+        idx_row_order = clamp_identifier(f"idx_{index_key}_row_order")
+        idx_compare_ts = clamp_identifier(f"idx_{index_key}_compare_ts")
+        uniq_row_label = clamp_identifier(f"uniq_{index_key}_row_label")
+        legacy_compare_id_idx = clamp_identifier(
+            f"uniq_{table_key(profile)}_{LEGACY_COMPARISON_RESULTS_TABLE_SUFFIX}_compare_id"
+        )
+        current_compare_id_idx = clamp_identifier(f"uniq_{index_key}_compare_id")
+
+        cur.execute(f"DROP INDEX IF EXISTS {qident(legacy_compare_id_idx)}")
+        cur.execute(f"DROP INDEX IF EXISTS {qident(current_compare_id_idx)}")
 
         cur.execute(
-            f"CREATE INDEX IF NOT EXISTS {qident(idx_ts)} "
-            f"ON {qident(table_name)} (ts)"
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_row_order)} "
+            f"ON {qident(table_name)} (row_order)"
         )
         cur.execute(
-            f"CREATE INDEX IF NOT EXISTS {qident(idx_mode_ts)} "
-            f"ON {qident(table_name)} (mode, ts)"
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_compare_ts)} "
+            f"ON {qident(table_name)} (compare_ts)"
         )
         cur.execute(
-            f"CREATE INDEX IF NOT EXISTS {qident(idx_retention)} "
-            f"ON {qident(table_name)} (latency_retention)"
-        )
-        cur.execute(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS {qident(uniq_compare_id)} "
-            f"ON {qident(table_name)} (compare_id)"
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {qident(uniq_row_label)} "
+            f"ON {qident(table_name)} (row_label)"
         )
         return
 
@@ -1546,62 +1848,66 @@ def run_direct_import_comparison_results(
         print("psycopg is required. Install with: pip install psycopg[binary]")
         return 1
 
-    select_sql = f"""
-        SELECT 1
-        FROM {qident(table_name)}
-        WHERE compare_id = %(compare_id)s
-        LIMIT 1
-    """
-
     insert_sql = f"""
         INSERT INTO {qident(table_name)} (
+            row_label,
+            row_order,
+            row_kind,
             compare_id,
-            ts,
+            compare_ts,
             mode,
-            baseline_config_name,
-            baseline_state_token,
-            candidate_config_name,
-            candidate_state_token,
-            benchmark_only,
-            force_rerun,
-            task_count,
+            shape,
             num_shapes,
+            baseline_latency_us,
+            candidate_latency_us,
+            baseline_task_tune_time,
+            candidate_task_tune_time,
+            baseline_task_tune_time_sec,
+            candidate_task_tune_time_sec,
             latency_retention,
-            execution_time_reduction,
-            baseline_latency_geomean_us,
-            candidate_latency_geomean_us,
-            baseline_total_tune_tir_time_sec,
-            candidate_total_tune_tir_time_sec,
-            metadata,
-            latest_compare,
-            comparison
+            exec_time_reduction,
+            row_payload
         )
         VALUES (
+            %(row_label)s,
+            %(row_order)s,
+            %(row_kind)s,
             %(compare_id)s,
-            %(ts)s,
+            %(compare_ts)s,
             %(mode)s,
-            %(baseline_config_name)s,
-            %(baseline_state_token)s,
-            %(candidate_config_name)s,
-            %(candidate_state_token)s,
-            %(benchmark_only)s,
-            %(force_rerun)s,
-            %(task_count)s,
+            %(shape)s,
             %(num_shapes)s,
+            %(baseline_latency_us)s,
+            %(candidate_latency_us)s,
+            %(baseline_task_tune_time)s,
+            %(candidate_task_tune_time)s,
+            %(baseline_task_tune_time_sec)s,
+            %(candidate_task_tune_time_sec)s,
             %(latency_retention)s,
-            %(execution_time_reduction)s,
-            %(baseline_latency_geomean_us)s,
-            %(candidate_latency_geomean_us)s,
-            %(baseline_total_tune_tir_time_sec)s,
-            %(candidate_total_tune_tir_time_sec)s,
-            %(metadata_json)s::jsonb,
-            %(latest_compare_json)s::jsonb,
-            %(comparison_json)s::jsonb
+            %(exec_time_reduction)s,
+            %(row_payload_json)s::jsonb
         )
+        ON CONFLICT (row_label) DO UPDATE SET
+            row_order = EXCLUDED.row_order,
+            row_kind = EXCLUDED.row_kind,
+            compare_id = EXCLUDED.compare_id,
+            compare_ts = EXCLUDED.compare_ts,
+            mode = EXCLUDED.mode,
+            shape = EXCLUDED.shape,
+            num_shapes = EXCLUDED.num_shapes,
+            baseline_latency_us = EXCLUDED.baseline_latency_us,
+            candidate_latency_us = EXCLUDED.candidate_latency_us,
+            baseline_task_tune_time = EXCLUDED.baseline_task_tune_time,
+            candidate_task_tune_time = EXCLUDED.candidate_task_tune_time,
+            baseline_task_tune_time_sec = EXCLUDED.baseline_task_tune_time_sec,
+            candidate_task_tune_time_sec = EXCLUDED.candidate_task_tune_time_sec,
+            latency_retention = EXCLUDED.latency_retention,
+            exec_time_reduction = EXCLUDED.exec_time_reduction,
+            row_payload = EXCLUDED.row_payload,
+            updated_at = now()
     """
 
     inserted = 0
-    skipped = 0
     pending: List[Dict[str, Any]] = []
 
     try:
@@ -1611,12 +1917,6 @@ def run_direct_import_comparison_results(
                 conn.commit()
 
                 for row in rows:
-                    if dedupe:
-                        cur.execute(select_sql, row)
-                        if cur.fetchone():
-                            skipped += 1
-                            continue
-
                     pending.append(row)
                     if len(pending) >= chunk_size:
                         cur.executemany(insert_sql, pending)
@@ -1628,13 +1928,28 @@ def run_direct_import_comparison_results(
                     cur.executemany(insert_sql, pending)
                     conn.commit()
                     inserted += len(pending)
+
+                row_labels = [row.get("row_label") for row in rows if row.get("row_label")]
+                if row_labels:
+                    placeholders = ", ".join(["%s"] * len(row_labels))
+                    cur.execute(
+                        (
+                            f"DELETE FROM {qident(table_name)} "
+                            f"WHERE row_label IS NULL OR row_label NOT IN ({placeholders})"
+                        ),
+                        tuple(row_labels),
+                    )
+                    conn.commit()
     except psycopg.OperationalError as exc:
         print(f"Connection failed: {exc}")
         if "sslrootcert" in str(exc) or "certificate" in str(exc):
             print("Hint: try --sslmode=require (Neon default) or --sslrootcert=system.")
         return 1
 
-    print(f"Imported {inserted} rows. Skipped {skipped} duplicates.")
+    if dedupe:
+        print(f"Upserted {inserted} rows (comp_summary snapshot overwrite mode).")
+    else:
+        print(f"Upserted {inserted} rows (comp_summary snapshot overwrite mode).")
     return 0
 
 
