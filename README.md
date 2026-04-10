@@ -1120,6 +1120,36 @@ python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel mlp_e
 python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel mlp_reduce
 ```
 
+### Phase 4.1b — MetaSchedule Tuning with 80/20 Best Config
+
+Use this dedicated workflow to run MetaSchedule using the selected config from
+`research/results/metaschedule/best_pruned_config.json` and store results as a
+separate variant (`metaschedule_best_config`) without mixing with default
+MetaSchedule traces.
+
+```bash
+# general syntax
+python3 -m research.workloads.bert.metaschedule.metaschedule_tune_best_config \
+   [--all] [--kernel <kernel>] [--iterations <n>] \
+   [--best-config-path <path>] [--variant <name>] [--schedules-file <path>] [--results-file <path>]
+
+# common runs
+python3 -m research.workloads.bert.metaschedule.metaschedule_tune_best_config --all
+python3 -m research.workloads.bert.metaschedule.metaschedule_tune_best_config --kernel qkv
+
+# explicit output locations (recommended defaults shown)
+python3 -m research.workloads.bert.metaschedule.metaschedule_tune_best_config --all \
+   --best-config-path research/results/metaschedule/best_pruned_config.json \
+   --variant metaschedule_best_config \
+   --schedules-file research/results/metaschedule/best_schedules_metaschedule_best_config.json \
+   --results-file research/results/bert_matmul_results.json
+```
+
+Default outputs:
+
+- `research/results/metaschedule/best_schedules_metaschedule_best_config.json`
+- `research/results/bert_matmul_results.json` entries tagged with `variant=metaschedule_best_config`
+
 ---
 
 ### Phase 4.2 — Result Extraction

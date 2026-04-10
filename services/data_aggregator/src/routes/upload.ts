@@ -60,6 +60,7 @@ type InsertRow = {
 }
 
 type BestScheduleInsertRow = {
+  variant: string
   kernel: string
   m: number
   k: number
@@ -984,6 +985,7 @@ function parseBestScheduleEntry(
   rows: BestScheduleInsertRow[],
   errors: Array<{ index: number; error: string }>,
 ) {
+  const variant = typeof entry.variant === 'string' && entry.variant ? entry.variant : 'metaschedule'
   const kernel = typeof entry.kernel === 'string' ? entry.kernel : ''
   const trace = typeof entry.trace === 'string' ? entry.trace : ''
 
@@ -1015,6 +1017,7 @@ function parseBestScheduleEntry(
   }
 
   rows.push({
+    variant,
     kernel,
     m,
     k,
@@ -1586,6 +1589,7 @@ async function ensureBestSchedulesProfileTable(profile: string): Promise<{ table
     create table if not exists ${sql.identifier(tableName)} (
       id uuid primary key default gen_random_uuid(),
       ingested_at timestamptz not null default now(),
+      variant text not null default 'metaschedule',
       kernel text not null,
       m integer not null,
       k integer not null,
@@ -1597,14 +1601,24 @@ async function ensureBestSchedulesProfileTable(profile: string): Promise<{ table
     )
   `)
 
+  await execute(sql`
+    alter table ${sql.identifier(tableName)}
+      add column if not exists variant text default 'metaschedule'
+  `)
+  await execute(sql`
+    update ${sql.identifier(tableName)}
+    set variant = 'metaschedule'
+    where variant is null or variant = ''
+  `)
+
   const indexKey = `${key}_${BEST_SCHEDULES_TABLE_SUFFIX}`
-  const idxKernelShape = clampIdentifier(`idx_${indexKey}_kernel_shape`)
+  const idxKernelShape = clampIdentifier(`idx_${indexKey}_variant_kernel_shape`)
   const idxLatency = clampIdentifier(`idx_${indexKey}_latency`)
-  const uniqRow = clampIdentifier(`uniq_${indexKey}_row`)
+  const uniqRow = clampIdentifier(`uniq_${indexKey}_row_v2`)
 
   await execute(sql`
     create index if not exists ${sql.identifier(idxKernelShape)}
-    on ${sql.identifier(tableName)} (kernel, m, k, n)
+    on ${sql.identifier(tableName)} (variant, kernel, m, k, n)
   `)
   await execute(sql`
     create index if not exists ${sql.identifier(idxLatency)}
@@ -1613,6 +1627,7 @@ async function ensureBestSchedulesProfileTable(profile: string): Promise<{ table
   await execute(sql`
     create unique index if not exists ${sql.identifier(uniqRow)}
     on ${sql.identifier(tableName)} (
+      variant,
       kernel,
       m,
       k,
@@ -2129,6 +2144,7 @@ async function insertBestScheduleRows(
   if (rows.length === 0) return { inserted: 0, duplicates: 0 }
 
   const columnNames = [
+    'variant',
     'kernel',
     'm',
     'k',
@@ -2144,6 +2160,7 @@ async function insertBestScheduleRows(
     rows.map(
       (row) =>
         sql`(
+          ${row.variant},
           ${row.kernel},
           ${row.m},
           ${row.k},

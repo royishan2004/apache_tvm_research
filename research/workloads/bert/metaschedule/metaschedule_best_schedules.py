@@ -35,11 +35,14 @@ SCHEDULES_FILE = "research/results/metaschedule/best_schedules.json"
 RESULTS_FILE = "research/results/bert_matmul_results.json"
 
 
-def _load_existing() -> List[dict]:
-    if not os.path.exists(SCHEDULES_FILE):
+def _load_existing(path: str) -> List[dict]:
+    if not os.path.exists(path):
         return []
-    with open(SCHEDULES_FILE, "r") as f:
-        return json.load(f)
+    with open(path, "r") as f:
+        payload = json.load(f)
+    if not isinstance(payload, list):
+        return []
+    return payload
 
 
 def _extract_decisions(trace) -> List[dict]:
@@ -69,6 +72,11 @@ def save_best_schedule(
     latency_us: float,
     std_us: float = 0.0,
     profile: Optional[str] = None,
+    variant: str = "metaschedule",
+    runs_label: str = "MetaSchedule",
+    source_label: str = "MetaSchedule-db",
+    schedules_file: str = SCHEDULES_FILE,
+    results_file: str = RESULTS_FILE,
 ) -> None:
     """Append (or update) the best schedule for a given kernel + M value."""
     profile = resolve_profile(profile)
@@ -76,6 +84,7 @@ def save_best_schedule(
 
     new_entry = {
         "profile": profile,
+        "variant": variant,
         "kernel": kernel_name,
         "M": M,
         "K": K,
@@ -86,20 +95,24 @@ def save_best_schedule(
         "decisions": _extract_decisions(trace),
     }
 
-    records = _load_existing()
+    records = _load_existing(schedules_file)
 
-    # Replace existing entry for this kernel+M if present
+    # Replace existing entry for this variant+kernel+M if present.
     records = [
         r for r in records
-        if not (r["kernel"] == kernel_name and r["M"] == M)
+        if not (
+            r.get("variant", "metaschedule") == variant
+            and r.get("kernel") == kernel_name
+            and r.get("M") == M
+        )
     ]
     records.append(new_entry)
 
     # Sort for stable output
-    records.sort(key=lambda r: (r["kernel"], r["M"]))
+    records.sort(key=lambda r: (r.get("variant", "metaschedule"), r.get("kernel", ""), r.get("M", 0)))
 
-    os.makedirs(os.path.dirname(SCHEDULES_FILE), exist_ok=True)
-    with open(SCHEDULES_FILE, "w") as f:
+    os.makedirs(os.path.dirname(schedules_file), exist_ok=True)
+    with open(schedules_file, "w") as f:
         json.dump(records, f, indent=2)
 
     upload_best_schedules([new_entry], profile=profile)
@@ -109,38 +122,49 @@ def save_best_schedule(
     # (kernel, M) and append a new one.
     try:
         results = []
-        if os.path.exists(RESULTS_FILE):
-            with open(RESULTS_FILE, "r") as f:
+        if os.path.exists(results_file):
+            with open(results_file, "r") as f:
                 try:
                     results = json.load(f)
                 except json.JSONDecodeError:
                     results = []
+        if not isinstance(results, list):
+            results = []
+
+        results = [
+            r for r in results
+            if not (
+                r.get("variant") == variant
+                and r.get("kernel") == kernel_name
+                and r.get("M") == M
+            )
+        ]
 
         new_entry = {
             "profile": profile,
             "kernel": kernel_name,
-            "variant": "metaschedule",
+            "variant": variant,
             "M": M,
             "K": K,
             "N": N,
             "latency_us": latency_us,
             "std_us": std_us,
-            "runs": "MetaSchedule",
+            "runs": runs_label,
             "target": "llvm",
-            "source": "MetaSchedule-db",
+            "source": source_label,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         results.append(new_entry)
 
         # Keep other entries; sort for stability
-        results.sort(key=lambda r: (r.get("kernel", ""), r.get("M", 0)))
-        os.makedirs(os.path.dirname(RESULTS_FILE), exist_ok=True)
-        with open(RESULTS_FILE, "w") as f:
+        results.sort(key=lambda r: (r.get("kernel", ""), r.get("variant", ""), r.get("M", 0)))
+        os.makedirs(os.path.dirname(results_file), exist_ok=True)
+        with open(results_file, "w") as f:
             json.dump(results, f, indent=2)
 
-        print(f"✔ Wrote MetaSchedule summary entry for {kernel_name} M={M} to {RESULTS_FILE}")
+        print(f"✔ Wrote MetaSchedule summary entry for variant={variant} kernel={kernel_name} M={M} to {results_file}")
 
         upload_results([new_entry], profile=profile)
     except Exception as e:
         # Non-fatal: log error so user can debug why results file wasn't updated
-        print(f"⚠ Failed to update {RESULTS_FILE}: {e}")
+        print(f"⚠ Failed to update {results_file}: {e}")

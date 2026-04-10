@@ -252,6 +252,7 @@ def canonical_json(value: Any) -> Optional[str]:
 
 
 def normalize_best_schedule_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    variant = entry.get("variant")
     kernel = entry.get("kernel")
     trace = entry.get("trace")
 
@@ -264,6 +265,8 @@ def normalize_best_schedule_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[
 
     if not isinstance(kernel, str) or not kernel:
         return None, "Missing kernel"
+    if not isinstance(variant, str) or not variant:
+        variant = "metaschedule"
     if m is None or k is None or n is None:
         return None, "Missing shape"
     if latency_us is None or std_us is None:
@@ -277,6 +280,7 @@ def normalize_best_schedule_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[
         return None, "Invalid decisions"
 
     return {
+        "variant": variant,
         "kernel": kernel,
         "m": m,
         "k": k,
@@ -704,6 +708,7 @@ def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[s
                 errors.append(f"Entry {idx}: {error}")
                 continue
             key = (
+                normalized["variant"],
                 normalized["kernel"],
                 normalized["m"],
                 normalized["k"],

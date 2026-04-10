@@ -62,6 +62,7 @@ export const bestSchedules = pgTable(
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
     ingestedAt: timestamp("ingested_at", { withTimezone: true }).defaultNow().notNull(),
 
+    variant: text("variant").notNull().default("metaschedule"),
     kernel: text("kernel").notNull(),
     m: integer("m").notNull(),
     k: integer("k").notNull(),
@@ -74,7 +75,13 @@ export const bestSchedules = pgTable(
     decisions: jsonb("decisions").$type<unknown[]>().notNull().default(sql`'[]'::jsonb`),
   },
   (table) => [
-    index("idx_best_schedules_kernel_shape").on(table.kernel, table.m, table.k, table.n),
+    index("idx_best_schedules_variant_kernel_shape").on(
+      table.variant,
+      table.kernel,
+      table.m,
+      table.k,
+      table.n,
+    ),
     index("idx_best_schedules_latency").on(table.latencyUs),
   ]
 )

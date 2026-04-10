@@ -29,6 +29,23 @@ python3 scripts/import_bert_matmul_results.py comparison-results
 python3 scripts/import_bert_matmul_results.py best-schedules --mode=direct
 python3 scripts/import_bert_matmul_results.py pruning-experiments --mode=direct
 python3 scripts/import_bert_matmul_results.py comparison-results --mode=direct
+
+### Importing 80/20 best-schedules
+
+If you've run the 80/20 best-config runner and produced a dedicated JSON (for example
+`research/results/metaschedule/best_schedules_80_20.json`), import it with:
+
+```sh
+python3 scripts/import_bert_matmul_results.py best-schedules --file=research/results/metaschedule/best_schedules_metaschedule_best_config.json
+```
+
+For a direct DB upload use:
+
+```sh
+python3 scripts/import_bert_matmul_results.py best-schedules --file=research/results/metaschedule/best_schedules_80_20.json --mode=direct
+```
+
+You can also add `--profile`, `--api-url` or other flags described below as needed.
 ```
 
 Backward compatible shortcut:
