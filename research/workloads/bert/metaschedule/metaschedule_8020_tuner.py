@@ -36,7 +36,6 @@ from research.workloads.bert.bert_shapes import (
 	mlp_expanded_shape,
 	qkv_shape,
 )
-from research.workloads.bert.metaschedule.metaschedule_best_schedules import save_best_schedule
 from research.workloads.common.data_aggregator_client import (
 	ensure_data_aggregator_connection_or_prompt,
 	resolve_profile,
@@ -974,15 +973,10 @@ def _run_single_task(
 		}
 
 		if persist_best_schedules:
-			save_best_schedule(
-				kernel_name=task.kernel,
-				M=task.M,
-				K=task.K,
-				N=task.N,
-				best_record=best_record,
-				latency_us=latency_us,
-				std_us=std_us,
-				profile=profile,
+			LOGGER.info(
+				"Skipping best schedule persistence for 80/20 tuner task %s[M=%d] to keep baseline artifacts untouched",
+				task.kernel,
+				task.M,
 			)
 
 		result["status"] = "ok"
@@ -2316,29 +2310,13 @@ def _persist_best_schedules_for_selection(
 	run_tracker: RunProgressTracker,
 	profile: str,
 ) -> None:
-	config = _config_from_dict(selected_experiment["config"])
-	iteration = int(selected_experiment.get("iteration", 1))
+	# 80/20 runs must not write to baseline MetaSchedule artifacts.
+	# In particular, we intentionally avoid touching:
+	# - research/results/metaschedule/best_schedules.json
+	# - research/results/bert_matmul_results.json
+	_ = (selected_experiment, tasks, args, history_stats, store, run_tracker, profile)
 	LOGGER.info(
-		"Persisting best schedules for selected config=%s iteration=%d",
-		config.name,
-		iteration,
-	)
-
-	_evaluate_config(
-		mode_label="final_persist",
-		iteration=iteration,
-		config=config,
-		tasks=tasks,
-		args=args,
-		history_stats=history_stats,
-		store=store,
-		baseline_experiment=None,
-		benchmark_only=True,
-		force_rerun=True,
-		is_baseline=False,
-		persist_best_schedules=True,
-		run_tracker=run_tracker,
-		profile=profile,
+		"Skipping final best-schedule persistence in 80/20 mode to protect baseline artifacts"
 	)
 
 
