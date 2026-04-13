@@ -15,9 +15,12 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BERT_RESULTS = ROOT / "research" / "results" / "bert_matmul_results.json"
 DEFAULT_BEST_SCHEDULES = ROOT / "research" / "results" / "metaschedule" / "best_schedules.json"
-DEFAULT_BEST_PRUNED_CONFIG = ROOT / "research" / "results" / "metaschedule" / "best_pruned_config.json"
-DEFAULT_PRUNING_EXPERIMENTS = ROOT / "research" / "results" / "metaschedule" / "pruning_experiments.json"
-DEFAULT_COMPARISON_RESULTS = ROOT / "research" / "results" / "metaschedule" / "comparison_results.json"
+ARCHIVED_8020_RESULTS = (
+    ROOT / "research" / "archive" / "metaschedule_8020" / "results" / "metaschedule"
+)
+DEFAULT_BEST_PRUNED_CONFIG = ARCHIVED_8020_RESULTS / "best_pruned_config.json"
+DEFAULT_PRUNING_EXPERIMENTS = ARCHIVED_8020_RESULTS / "pruning_experiments.json"
+DEFAULT_COMPARISON_RESULTS = ARCHIVED_8020_RESULTS / "comparison_results.json"
 DEFAULT_ENV = ROOT / "services" / "data_aggregator" / ".env"
 IST = ZoneInfo("Asia/Kolkata")
 DEFAULT_API_TIMEOUT = 300
@@ -2053,19 +2056,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     best_pruned_parser = subparsers.add_parser(
         DATASET_BEST_PRUNED,
-        help="Import research/results/metaschedule/best_pruned_config.json",
+        help="Import archived 80/20 best_pruned_config.json",
     )
     add_common_args(best_pruned_parser, DEFAULT_BEST_PRUNED_CONFIG)
 
     pruning_parser = subparsers.add_parser(
         DATASET_PRUNING,
-        help="Import research/results/metaschedule/pruning_experiments.json",
+        help="Import archived 80/20 pruning_experiments.json",
     )
     add_common_args(pruning_parser, DEFAULT_PRUNING_EXPERIMENTS)
 
     comparison_parser = subparsers.add_parser(
         DATASET_COMPARISON,
-        help="Import research/results/metaschedule/comparison_results.json",
+        help="Import archived 80/20 comparison_results.json",
     )
     add_common_args(comparison_parser, DEFAULT_COMPARISON_RESULTS)
 

@@ -7,9 +7,9 @@ This script imports benchmark JSON files into profile-specific tables and skips 
 Supported commands:
 - `bert-matmul` -> imports `research/results/bert_matmul_results.json` into `*_bert_matmul_results`
 - `best-schedules` -> imports `research/results/metaschedule/best_schedules.json` into `*_best_schedules`
-- `best-pruned-config` -> imports `research/results/metaschedule/best_pruned_config.json` into `*_best_pruned_config`
-- `pruning-experiments` -> imports `research/results/metaschedule/pruning_experiments.json` into `*_pruning_experiments`
-- `comparison-results` -> imports `research/results/metaschedule/comparison_results.json` into `*_comp_summary`
+- `best-pruned-config` -> imports archived `research/archive/metaschedule_8020/results/metaschedule/best_pruned_config.json` into `*_best_pruned_config`
+- `pruning-experiments` -> imports archived `research/archive/metaschedule_8020/results/metaschedule/pruning_experiments.json` into `*_pruning_experiments`
+- `comparison-results` -> imports archived `research/archive/metaschedule_8020/results/metaschedule/comparison_results.json` into `*_comp_summary`
 
 ### Requirements
 
@@ -29,24 +29,23 @@ python3 scripts/import_bert_matmul_results.py comparison-results
 python3 scripts/import_bert_matmul_results.py best-schedules --mode=direct
 python3 scripts/import_bert_matmul_results.py pruning-experiments --mode=direct
 python3 scripts/import_bert_matmul_results.py comparison-results --mode=direct
+```
 
 ### Importing 80/20 best-schedules
 
-If you've run the 80/20 best-config runner and produced a dedicated JSON (for example
-`research/results/metaschedule/best_schedules_80_20.json`), import it with:
+If you need to import archived 80/20 best-config schedules, use:
 
 ```sh
-python3 scripts/import_bert_matmul_results.py best-schedules --file=research/results/metaschedule/best_schedules_metaschedule_best_config.json
+python3 scripts/import_bert_matmul_results.py best-schedules --file=research/archive/metaschedule_8020/results/metaschedule/best_schedules_metaschedule_best_config.json
 ```
 
 For a direct DB upload use:
 
 ```sh
-python3 scripts/import_bert_matmul_results.py best-schedules --file=research/results/metaschedule/best_schedules_80_20.json --mode=direct
+python3 scripts/import_bert_matmul_results.py best-schedules --file=research/archive/metaschedule_8020/results/metaschedule/best_schedules_metaschedule_best_config.json --mode=direct
 ```
 
 You can also add `--profile`, `--api-url` or other flags described below as needed.
-```
 
 Backward compatible shortcut:
 
@@ -79,6 +78,6 @@ Options:
 - Duplicates are detected by comparing all content columns (excluding generated `id` and `ingested_at`).
 - For Neon, SSL is required in `direct` mode; if your URL has no `sslmode`, the script defaults to `sslmode=require`.
 - API uploads default to 300 seconds for this script (override with `--timeout`).
-- Regular uploads (from `qkv_mlp_run`, `metaschedule_best_schedules`, and `metaschedule_8020_tuner`) default to 10 seconds via `DATA_AGGREGATOR_TIMEOUT`.
+- Regular uploads (from `qkv_mlp_run` and `metaschedule_best_schedules`) default to 10 seconds via `DATA_AGGREGATOR_TIMEOUT`.
 - Direct mode uses the sanitized profile table name: lowercase, non-alphanumerics replaced by `_`, and a leading digit is prefixed with `p`.
 - `comparison-results` keeps a fixed snapshot table keyed by row label (`shape:*` + `overall`), so each import overwrites existing rows instead of appending history.

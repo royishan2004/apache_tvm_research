@@ -1,0 +1,613 @@
+2026-04-07 12:31:33 [INFO] [task_scheduler.cc:166] Initializing Task #0: "main"
+2026-04-07 12:31:33 [INFO] [task_scheduler.cc:41] 
+# from tvm.script import ir as I
+# from tvm.script import tir as T
+
+@I.ir_module
+class Module:
+    @T.prim_func
+    def main(A: T.Buffer((16, 768), "float32"), B: T.Buffer((768, 3072), "float32"), C: T.Buffer((16, 3072), "float32")):
+        T.func_attr({"tir.noalias": True})
+        # with T.block("root"):
+        for i, j, k in T.grid(16, 3072, 768):
+            with T.block("C"):
+                vi, vj, vk = T.axis.remap("SSR", [i, j, k])
+                T.reads(A[vi, vk], B[vk, vj])
+                T.writes(C[vi, vj])
+                with T.init():
+                    C[vi, vj] = T.float32(0.0)
+                C[vi, vj] = C[vi, vj] + A[vi, vk] * B[vk, vj]
+2026-04-07 12:31:33 [INFO] [task_scheduler.cc:170] Total 3 design space(s) generated
+2026-04-07 12:31:33 [INFO] [task_scheduler.cc:176] Design space #0:
+# from tvm.script import ir as I
+# from tvm.script import tir as T
+
+@I.ir_module
+class Module:
+    @T.prim_func
+    def main(A: T.Buffer((16, 768), "float32"), B: T.Buffer((768, 3072), "float32"), C: T.Buffer((16, 3072), "float32")):
+        T.func_attr({"tir.noalias": True})
+        with T.block("root"):
+            T.reads()
+            T.writes()
+            T.block_attr({"meta_schedule.parallel": 128, "meta_schedule.unroll_explicit": 0, "meta_schedule.vectorize": 64})
+            C_global = T.alloc_buffer((16, 3072))
+            for i_0, j_0, i_1, j_1 in T.grid(1, 3, 2, 1):
+                for k_0, i_2, j_2, k_1, i_3, j_3 in T.grid(64, 8, 32, 12, 1, 32):
+                    with T.block("C"):
+                        vi = T.axis.spatial(16, i_0 * 16 + i_1 * 8 + i_2 + i_3)
+                        vj = T.axis.spatial(3072, j_0 * 1024 + j_1 * 1024 + j_2 * 32 + j_3)
+                        vk = T.axis.reduce(768, k_0 * 12 + k_1)
+                        T.reads(A[vi, vk], B[vk, vj])
+                        T.writes(C_global[vi, vj])
+                        T.block_attr({"meta_schedule.tiling_structure": "SSRSRS"})
+                        with T.init():
+                            C_global[vi, vj] = T.float32(0.0)
+                        C_global[vi, vj] = C_global[vi, vj] + A[vi, vk] * B[vk, vj]
+                for ax0, ax1 in T.grid(8, 1024):
+                    with T.block("C_global"):
+                        v0 = T.axis.spatial(16, i_1 * 8 + ax0)
+                        v1 = T.axis.spatial(3072, j_0 * 1024 + ax1)
+                        T.reads(C_global[v0, v1])
+                        T.writes(C[v0, v1])
+                        C[v0, v1] = C_global[v0, v1]
+b0 = sch.get_block(name="C", func_name="main")
+b1 = sch.get_block(name="root", func_name="main")
+sch.annotate(block_or_loop=b0, ann_key="meta_schedule.tiling_structure", ann_val="SSRSRS")
+l2, l3, l4 = sch.get_loops(block=b0)
+v5, v6, v7, v8 = sch.sample_perfect_tile(loop=l2, n=4, max_innermost_factor=64, decision=[1, 2, 8, 1])
+l9, l10, l11, l12 = sch.split(loop=l2, factors=[v5, v6, v7, v8], preserve_unit_iters=True, disable_predication=False)
+v13, v14, v15, v16 = sch.sample_perfect_tile(loop=l3, n=4, max_innermost_factor=64, decision=[3, 1, 32, 32])
+l17, l18, l19, l20 = sch.split(loop=l3, factors=[v13, v14, v15, v16], preserve_unit_iters=True, disable_predication=False)
+v21, v22 = sch.sample_perfect_tile(loop=l4, n=2, max_innermost_factor=64, decision=[64, 12])
+l23, l24 = sch.split(loop=l4, factors=[v21, v22], preserve_unit_iters=True, disable_predication=False)
+sch.reorder(l9, l17, l10, l18, l23, l11, l19, l24, l12, l20)
+b25 = sch.cache_write(block=b0, write_buffer_index=0, storage_scope="global")
+sch.reverse_compute_at(block=b25, loop=l18, preserve_unit_loops=True, index=-1)
+sch.annotate(block_or_loop=b1, ann_key="meta_schedule.parallel", ann_val=128)
+sch.annotate(block_or_loop=b1, ann_key="meta_schedule.vectorize", ann_val=64)
+v26 = sch.sample_categorical(candidates=[0, 16, 64, 512], probs=[0.25, 0.25, 0.25, 0.25], decision=0)
+sch.annotate(block_or_loop=b1, ann_key="meta_schedule.unroll_explicit", ann_val=v26)
+2026-04-07 12:31:33 [INFO] [task_scheduler.cc:176] Design space #1:
+# from tvm.script import ir as I
+# from tvm.script import tir as T
+
+@I.ir_module
+class Module:
+    @T.prim_func
+    def main(A: T.Buffer((16, 768), "float32"), B: T.Buffer((768, 3072), "float32"), C: T.Buffer((16, 3072), "float32")):
+        T.func_attr({"tir.noalias": True})
+        with T.block("root"):
+            T.reads()
+            T.writes()
+            T.block_attr({"meta_schedule.parallel": 128, "meta_schedule.unroll_explicit": 64, "meta_schedule.vectorize": 64})
+            C_global = T.alloc_buffer((16, 3072))
+            for i_0, j_0 in T.grid(1, 3):
+                for i_1, j_1, k_0, i_2, j_2, k_1, i_3, j_3 in T.grid(2, 1, 64, 8, 32, 12, 1, 32):
+                    with T.block("C"):
+                        vi = T.axis.spatial(16, i_0 * 16 + i_1 * 8 + i_2 + i_3)
+                        vj = T.axis.spatial(3072, j_0 * 1024 + j_1 * 1024 + j_2 * 32 + j_3)
+                        vk = T.axis.reduce(768, k_0 * 12 + k_1)
+                        T.reads(A[vi, vk], B[vk, vj])
+                        T.writes(C_global[vi, vj])
+                        T.block_attr({"meta_schedule.tiling_structure": "SSRSRS"})
+                        with T.init():
+                            C_global[vi, vj] = T.float32(0.0)
+                        C_global[vi, vj] = C_global[vi, vj] + A[vi, vk] * B[vk, vj]
+                for ax0, ax1 in T.grid(16, 1024):
+                    with T.block("C_global"):
+                        v0 = T.axis.spatial(16, ax0)
+                        v1 = T.axis.spatial(3072, j_0 * 1024 + ax1)
+                        T.reads(C_global[v0, v1])
+                        T.writes(C[v0, v1])
+                        C[v0, v1] = C_global[v0, v1]
+b0 = sch.get_block(name="C", func_name="main")
+b1 = sch.get_block(name="root", func_name="main")
+sch.annotate(block_or_loop=b0, ann_key="meta_schedule.tiling_structure", ann_val="SSRSRS")
+l2, l3, l4 = sch.get_loops(block=b0)
+v5, v6, v7, v8 = sch.sample_perfect_tile(loop=l2, n=4, max_innermost_factor=64, decision=[1, 2, 8, 1])
+l9, l10, l11, l12 = sch.split(loop=l2, factors=[v5, v6, v7, v8], preserve_unit_iters=True, disable_predication=False)
+v13, v14, v15, v16 = sch.sample_perfect_tile(loop=l3, n=4, max_innermost_factor=64, decision=[3, 1, 32, 32])
+l17, l18, l19, l20 = sch.split(loop=l3, factors=[v13, v14, v15, v16], preserve_unit_iters=True, disable_predication=False)
+v21, v22 = sch.sample_perfect_tile(loop=l4, n=2, max_innermost_factor=64, decision=[64, 12])
+l23, l24 = sch.split(loop=l4, factors=[v21, v22], preserve_unit_iters=True, disable_predication=False)
+sch.reorder(l9, l17, l10, l18, l23, l11, l19, l24, l12, l20)
+b25 = sch.cache_write(block=b0, write_buffer_index=0, storage_scope="global")
+sch.reverse_compute_at(block=b25, loop=l17, preserve_unit_loops=True, index=-1)
+sch.annotate(block_or_loop=b1, ann_key="meta_schedule.parallel", ann_val=128)
+sch.annotate(block_or_loop=b1, ann_key="meta_schedule.vectorize", ann_val=64)
+v26 = sch.sample_categorical(candidates=[0, 16, 64, 512], probs=[0.25, 0.25, 0.25, 0.25], decision=2)
+sch.annotate(block_or_loop=b1, ann_key="meta_schedule.unroll_explicit", ann_val=v26)
+2026-04-07 12:31:33 [INFO] [task_scheduler.cc:176] Design space #2:
+# from tvm.script import ir as I
+# from tvm.script import tir as T
+
+@I.ir_module
+class Module:
+    @T.prim_func
+    def main(A: T.Buffer((16, 768), "float32"), B: T.Buffer((768, 3072), "float32"), C: T.Buffer((16, 3072), "float32")):
+        T.func_attr({"tir.noalias": True})
+        with T.block("root"):
+            T.reads()
+            T.writes()
+            T.block_attr({"meta_schedule.parallel": 128, "meta_schedule.unroll_explicit": 64, "meta_schedule.vectorize": 64})
+            for i_0, j_0, i_1, j_1, k_0, i_2, j_2, k_1, i_3, j_3 in T.grid(1, 3, 2, 1, 64, 8, 32, 12, 1, 32):
+                with T.block("C"):
+                    vi = T.axis.spatial(16, i_0 * 16 + i_1 * 8 + i_2 + i_3)
+                    vj = T.axis.spatial(3072, j_0 * 1024 + j_1 * 1024 + j_2 * 32 + j_3)
+                    vk = T.axis.reduce(768, k_0 * 12 + k_1)
+                    T.reads(A[vi, vk], B[vk, vj])
+                    T.writes(C[vi, vj])
+                    T.block_attr({"meta_schedule.tiling_structure": "SSRSRS"})
+                    with T.init():
+                        C[vi, vj] = T.float32(0.0)
+                    C[vi, vj] = C[vi, vj] + A[vi, vk] * B[vk, vj]
+b0 = sch.get_block(name="C", func_name="main")
+b1 = sch.get_block(name="root", func_name="main")
+sch.annotate(block_or_loop=b0, ann_key="meta_schedule.tiling_structure", ann_val="SSRSRS")
+l2, l3, l4 = sch.get_loops(block=b0)
+v5, v6, v7, v8 = sch.sample_perfect_tile(loop=l2, n=4, max_innermost_factor=64, decision=[1, 2, 8, 1])
+l9, l10, l11, l12 = sch.split(loop=l2, factors=[v5, v6, v7, v8], preserve_unit_iters=True, disable_predication=False)
+v13, v14, v15, v16 = sch.sample_perfect_tile(loop=l3, n=4, max_innermost_factor=64, decision=[3, 1, 32, 32])
+l17, l18, l19, l20 = sch.split(loop=l3, factors=[v13, v14, v15, v16], preserve_unit_iters=True, disable_predication=False)
+v21, v22 = sch.sample_perfect_tile(loop=l4, n=2, max_innermost_factor=64, decision=[64, 12])
+l23, l24 = sch.split(loop=l4, factors=[v21, v22], preserve_unit_iters=True, disable_predication=False)
+sch.reorder(l9, l17, l10, l18, l23, l11, l19, l24, l12, l20)
+sch.annotate(block_or_loop=b1, ann_key="meta_schedule.parallel", ann_val=128)
+sch.annotate(block_or_loop=b1, ann_key="meta_schedule.vectorize", ann_val=64)
+v25 = sch.sample_categorical(candidates=[0, 16, 64, 512], probs=[0.25, 0.25, 0.25, 0.25], decision=2)
+sch.annotate(block_or_loop=b1, ann_key="meta_schedule.unroll_explicit", ann_val=v25)
+2026-04-07 12:31:34 [INFO] [evolutionary_search.cc:711] Generating candidates......
+2026-04-07 12:31:34 [INFO] [evolutionary_search.cc:713] Picked top 0 candidate(s) from database
+2026-04-07 12:31:34 [INFO] [evolutionary_search.cc:530] Sample-Init-Population summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:31:34 [INFO] [evolutionary_search.cc:721] Sampled 457 candidate(s)
+2026-04-07 12:31:34 [INFO] [evolutionary_search.cc:619] Evolve iter #0 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:31:34 [INFO] [evolutionary_search.cc:619] Evolve iter #1 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:31:34 [INFO] [evolutionary_search.cc:619] Evolve iter #2 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:31:35 [INFO] [evolutionary_search.cc:647] Scores of the best 64 candidates:
+[1 : 16]:	0.9998  0.9989  0.9973  0.9964  0.9958  0.9954  0.9953  0.9953  0.9952  0.9948  0.9936  0.9933  0.9915  0.9914  0.9913  0.9909
+[17 : 32]:	0.9896  0.9891  0.9863  0.9844  0.9832  0.9830  0.9802  0.9777  0.9772  0.9763  0.9745  0.9744  0.9737  0.9733  0.9729  0.9711
+[33 : 48]:	0.9709  0.9698  0.9666  0.9659  0.9655  0.9654  0.9643  0.9642  0.9639  0.9636  0.9621  0.9620  0.9617  0.9617  0.9610  0.9603
+[49 : 64]:	0.9600  0.9571  0.9558  0.9557  0.9556  0.9539  0.9539  0.9532  0.9528  0.9525  0.9499  0.9490  0.9480  0.9475  0.9458  0.9454
+2026-04-07 12:31:35 [INFO] [evolutionary_search.cc:725] Got 64 candidate(s) with evolutionary search
+2026-04-07 12:31:35 [INFO] [evolutionary_search.cc:728] Sending 64 candidates(s) for measurement
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #1: GFLOPs: 39.8545. Time: 1894.3257 us. Best GFLOPs: 39.8545
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #2: GFLOPs: 29.5112. Time: 2558.2688 us. Best GFLOPs: 39.8545
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #3: GFLOPs: 26.4459. Time: 2854.7913 us. Best GFLOPs: 39.8545
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #4: GFLOPs: 27.7264. Time: 2722.9435 us. Best GFLOPs: 39.8545
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #5: GFLOPs: 23.4287. Time: 3222.4328 us. Best GFLOPs: 39.8545
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #6: GFLOPs: 46.9745. Time: 1607.2017 us. Best GFLOPs: 46.9745
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #7: GFLOPs: 16.2525. Time: 4645.2944 us. Best GFLOPs: 46.9745
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #8: GFLOPs: 33.4487. Time: 2257.1126 us. Best GFLOPs: 46.9745
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #9: GFLOPs: 42.7868. Time: 1764.5025 us. Best GFLOPs: 46.9745
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #10: GFLOPs: 20.0947. Time: 3757.0810 us. Best GFLOPs: 46.9745
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #11: GFLOPs: 17.9054. Time: 4216.4658 us. Best GFLOPs: 46.9745
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #12: GFLOPs: 58.5002. Time: 1290.5503 us. Best GFLOPs: 58.5002
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #13: GFLOPs: 82.6947. Time: 912.9661 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #14: GFLOPs: 56.9792. Time: 1325.0004 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #15: GFLOPs: 5.1082. Time: 14779.7272 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #16: GFLOPs: 16.2983. Time: 4632.2397 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #17: GFLOPs: 22.5316. Time: 3350.7415 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #18: GFLOPs: 46.3982. Time: 1627.1633 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #19: GFLOPs: 11.0657. Time: 6822.6717 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #20: GFLOPs: 43.3183. Time: 1742.8524 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #21: GFLOPs: 51.5879. Time: 1463.4734 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #22: GFLOPs: 77.9102. Time: 969.0321 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #23: GFLOPs: 13.3764. Time: 5644.0732 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #24: GFLOPs: 29.3849. Time: 2569.2573 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #25: GFLOPs: 25.6942. Time: 2938.3093 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #26: GFLOPs: 55.9040. Time: 1350.4835 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #27: GFLOPs: 20.8711. Time: 3617.3295 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #28: GFLOPs: 31.0839. Time: 2428.8280 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #29: GFLOPs: 38.4824. Time: 1961.8727 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #30: GFLOPs: 20.4402. Time: 3693.5835 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #31: GFLOPs: 35.7640. Time: 2110.9890 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #32: GFLOPs: 16.1077. Time: 4687.0421 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #33: GFLOPs: 55.3178. Time: 1364.7941 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #34: GFLOPs: 30.1910. Time: 2500.6578 us. Best GFLOPs: 82.6947
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #35: GFLOPs: 97.1145. Time: 777.4071 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #36: GFLOPs: 43.0803. Time: 1752.4823 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #37: GFLOPs: 30.0177. Time: 2515.1011 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #38: GFLOPs: 52.4967. Time: 1438.1383 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #39: GFLOPs: 4.7267. Time: 15972.5504 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #40: GFLOPs: 45.6043. Time: 1655.4913 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #41: GFLOPs: 69.3100. Time: 1089.2722 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #42: GFLOPs: 48.5981. Time: 1553.5059 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #43: GFLOPs: 33.0473. Time: 2284.5295 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #44: GFLOPs: 20.2690. Time: 3724.7750 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #45: GFLOPs: 29.2477. Time: 2581.3127 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #46: GFLOPs: 22.0717. Time: 3420.5550 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #47: GFLOPs: 30.3618. Time: 2486.5970 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #48: GFLOPs: 41.2315. Time: 1831.0631 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #49: GFLOPs: 46.7247. Time: 1615.7938 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #50: GFLOPs: 30.2482. Time: 2495.9321 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #51: GFLOPs: 71.3735. Time: 1057.7799 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #52: GFLOPs: 26.5117. Time: 2847.7023 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #53: GFLOPs: 39.0794. Time: 1931.8970 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #54: GFLOPs: 28.4386. Time: 2654.7521 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #55: GFLOPs: 49.1106. Time: 1537.2950 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #56: GFLOPs: 69.1363. Time: 1092.0093 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #57: GFLOPs: 70.8479. Time: 1065.6282 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #58: GFLOPs: 90.1418. Time: 837.5411 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #59: GFLOPs: 27.3146. Time: 2763.9946 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #60: GFLOPs: 14.8318. Time: 5090.2331 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #61: GFLOPs: 75.1938. Time: 1004.0389 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #62: GFLOPs: 14.3080. Time: 5276.5803 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #63: GFLOPs: 35.1687. Time: 2146.7215 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #64: GFLOPs: 26.5991. Time: 2838.3431 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:05 [INFO] [evolutionary_search.cc:711] Generating candidates......
+2026-04-07 12:32:05 [INFO] [evolutionary_search.cc:713] Picked top 64 candidate(s) from database
+2026-04-07 12:32:05 [INFO] [evolutionary_search.cc:530] Sample-Init-Population summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:32:05 [INFO] [evolutionary_search.cc:721] Sampled 393 candidate(s)
+2026-04-07 12:32:05 [INFO] [evolutionary_search.cc:619] Evolve iter #0 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:32:05 [INFO] [evolutionary_search.cc:619] Evolve iter #1 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:32:06 [INFO] [evolutionary_search.cc:619] Evolve iter #2 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:32:06 [INFO] [evolutionary_search.cc:647] Scores of the best 64 candidates:
+[1 : 16]:	0.9997  0.9965  0.9940  0.9937  0.9920  0.9912  0.9912  0.9910  0.9905  0.9895  0.9881  0.9877  0.9846  0.9846  0.9844  0.9839
+[17 : 32]:	0.9820  0.9817  0.9815  0.9810  0.9806  0.9806  0.9801  0.9798  0.9789  0.9785  0.9782  0.9777  0.9776  0.9761  0.9752  0.9751
+[33 : 48]:	0.9749  0.9748  0.9742  0.9733  0.9730  0.9717  0.9712  0.9691  0.9684  0.9681  0.9662  0.9628  0.9627  0.9627  0.9589  0.9585
+[49 : 64]:	0.9580  0.9573  0.9570  0.9566  0.9562  0.9560  0.9558  0.9557  0.9557  0.9524  0.9523  0.9522  0.9511  0.9498  0.9484  0.9483
+2026-04-07 12:32:06 [INFO] [evolutionary_search.cc:725] Got 64 candidate(s) with evolutionary search
+2026-04-07 12:32:06 [INFO] [evolutionary_search.cc:728] Sending 63 candidates(s) for measurement
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #65: GFLOPs: 59.9363. Time: 1259.6289 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #66: GFLOPs: 28.9660. Time: 2606.4171 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #67: GFLOPs: 75.0278. Time: 1006.2605 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #68: GFLOPs: 55.2830. Time: 1365.6545 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #69: GFLOPs: 2.6636. Time: 28343.8804 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #70: GFLOPs: 25.6379. Time: 2944.7594 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #71: GFLOPs: 46.2441. Time: 1632.5850 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #72: GFLOPs: 84.1428. Time: 897.2540 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #73: GFLOPs: 55.2572. Time: 1366.2930 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #74: GFLOPs: 60.5147. Time: 1247.5880 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #75: GFLOPs: 76.5704. Time: 985.9874 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #76: GFLOPs: 59.9206. Time: 1259.9584 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #77: GFLOPs: 21.3978. Time: 3528.2739 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #78: GFLOPs: 13.3737. Time: 5645.2328 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #79: GFLOPs: 25.1311. Time: 3004.1414 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #80: GFLOPs: 23.9832. Time: 3147.9270 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #81: GFLOPs: 56.9074. Time: 1326.6724 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #82: GFLOPs: 42.4261. Time: 1779.5044 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #83: GFLOPs: 31.4976. Time: 2396.9258 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #84: GFLOPs: 71.3051. Time: 1058.7949 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #85: GFLOPs: 15.6587. Time: 4821.4255 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #86: GFLOPs: 2.2154. Time: 34078.2308 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #87: GFLOPs: 11.9637. Time: 6310.5475 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #88: GFLOPs: 6.9512. Time: 10861.0039 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #89: GFLOPs: 49.4019. Time: 1528.2287 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #90: GFLOPs: 46.8107. Time: 1612.8247 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #91: GFLOPs: 43.3308. Time: 1742.3520 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #92: GFLOPs: 44.1524. Time: 1709.9289 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #93: GFLOPs: 49.8648. Time: 1514.0432 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #94: GFLOPs: 24.9303. Time: 3028.3459 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #95: GFLOPs: 19.3292. Time: 3905.8749 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #96: GFLOPs: 27.1767. Time: 2778.0258 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #97: GFLOPs: 73.4494. Time: 1027.8842 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #98: GFLOPs: 55.1943. Time: 1367.8497 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #99: GFLOPs: 25.7130. Time: 2936.1639 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #100: GFLOPs: 27.1299. Time: 2782.8114 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #101: GFLOPs: 39.1960. Time: 1926.1528 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #102: GFLOPs: 40.6676. Time: 1856.4548 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #103: GFLOPs: 66.6279. Time: 1133.1213 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #104: GFLOPs: 77.3668. Time: 975.8381 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #105: GFLOPs: 5.6510. Time: 13359.9901 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #106: GFLOPs: 31.2743. Time: 2414.0430 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #107: GFLOPs: 22.8269. Time: 3307.3899 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #108: GFLOPs: 39.5978. Time: 1906.6098 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #109: GFLOPs: 81.4492. Time: 926.9271 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #110: GFLOPs: 7.3235. Time: 10308.9793 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #111: GFLOPs: 21.7070. Time: 3478.0309 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #112: GFLOPs: 38.3834. Time: 1966.9318 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #113: GFLOPs: 49.5275. Time: 1524.3552 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #114: GFLOPs: 22.1633. Time: 3406.4200 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #115: GFLOPs: 15.8379. Time: 4766.8943 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #116: GFLOPs: 13.1990. Time: 5719.9346 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #117: GFLOPs: 67.5266. Time: 1118.0407 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #118: GFLOPs: 56.6072. Time: 1333.7069 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #119: GFLOPs: 35.0295. Time: 2155.2553 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #120: GFLOPs: 35.9476. Time: 2100.2094 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #121: GFLOPs: 50.7598. Time: 1487.3468 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #122: GFLOPs: 30.2551. Time: 2495.3639 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #123: GFLOPs: 42.7911. Time: 1764.3253 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #124: GFLOPs: 24.1909. Time: 3120.9024 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #125: GFLOPs: 18.4812. Time: 4085.0957 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #126: GFLOPs: 15.7157. Time: 4803.9574 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #127: GFLOPs: 25.2413. Time: 2991.0239 us. Best GFLOPs: 97.1145
+2026-04-07 12:32:34 [INFO] [evolutionary_search.cc:711] Generating candidates......
+2026-04-07 12:32:34 [INFO] [evolutionary_search.cc:713] Picked top 91 candidate(s) from database
+2026-04-07 12:32:34 [INFO] [evolutionary_search.cc:530] Sample-Init-Population summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:32:34 [INFO] [evolutionary_search.cc:721] Sampled 366 candidate(s)
+2026-04-07 12:32:35 [INFO] [evolutionary_search.cc:619] Evolve iter #0 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:32:35 [INFO] [evolutionary_search.cc:619] Evolve iter #1 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:32:36 [INFO] [evolutionary_search.cc:619] Evolve iter #2 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:32:37 [INFO] [evolutionary_search.cc:647] Scores of the best 64 candidates:
+[1 : 16]:	0.9825  0.9149  0.8977  0.8699  0.8693  0.8693  0.8693  0.8382  0.8382  0.8382  0.8382  0.8321  0.8279  0.8279  0.8182  0.8072
+[17 : 32]:	0.8043  0.8041  0.8007  0.7975  0.7942  0.7920  0.7876  0.7862  0.7825  0.7781  0.7781  0.7764  0.7764  0.7763  0.7756  0.7742
+[33 : 48]:	0.7666  0.7637  0.7627  0.7613  0.7601  0.7587  0.7569  0.7563  0.7551  0.7501  0.7478  0.7477  0.7468  0.7468  0.7466  0.7431
+[49 : 64]:	0.7424  0.7424  0.7402  0.7398  0.7378  0.7376  0.7373  0.7370  0.7370  0.7350  0.7343  0.7343  0.7338  0.7320  0.7320  0.7318
+2026-04-07 12:32:37 [INFO] [evolutionary_search.cc:725] Got 64 candidate(s) with evolutionary search
+2026-04-07 12:32:37 [INFO] [evolutionary_search.cc:728] Sending 64 candidates(s) for measurement
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #128: GFLOPs: 100.7786. Time: 749.1418 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #129: GFLOPs: 75.4845. Time: 1000.1719 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #130: GFLOPs: 92.9895. Time: 811.8924 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #131: GFLOPs: 74.0330. Time: 1019.7807 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #132: GFLOPs: 50.9616. Time: 1481.4572 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #133: GFLOPs: 61.2222. Time: 1233.1710 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #134: GFLOPs: 60.9774. Time: 1238.1224 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #135: GFLOPs: 86.5556. Time: 872.2424 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #136: GFLOPs: 75.4104. Time: 1001.1549 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #137: GFLOPs: 67.4121. Time: 1119.9392 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #138: GFLOPs: 80.1507. Time: 941.9438 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #139: GFLOPs: 74.3717. Time: 1015.1376 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #140: GFLOPs: 78.3205. Time: 963.9560 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #141: GFLOPs: 90.5682. Time: 833.5979 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #142: GFLOPs: 93.6553. Time: 806.1208 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #143: GFLOPs: 76.0946. Time: 992.1522 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #144: GFLOPs: 95.9459. Time: 786.8754 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #145: GFLOPs: 81.6966. Time: 924.1202 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #146: GFLOPs: 70.7059. Time: 1067.7670 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #147: GFLOPs: 60.8198. Time: 1241.3311 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #148: GFLOPs: 9.5730. Time: 7886.5297 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #149: GFLOPs: 50.5776. Time: 1492.7068 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #150: GFLOPs: 57.2451. Time: 1318.8456 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #151: GFLOPs: 48.8418. Time: 1545.7565 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #152: GFLOPs: 47.3267. Time: 1595.2399 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #153: GFLOPs: 69.1170. Time: 1092.3142 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #154: GFLOPs: 59.5923. Time: 1266.9002 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #155: GFLOPs: 59.9634. Time: 1259.0601 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #156: GFLOPs: 57.3469. Time: 1316.5049 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #157: GFLOPs: 77.8649. Time: 969.5956 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #158: GFLOPs: 59.0030. Time: 1279.5528 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #159: GFLOPs: 54.8375. Time: 1376.7493 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #160: GFLOPs: 77.7658. Time: 970.8314 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #161: GFLOPs: 62.1716. Time: 1214.3396 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #162: GFLOPs: 73.6589. Time: 1024.9601 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #163: GFLOPs: 75.5152. Time: 999.7653 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #164: GFLOPs: 62.0543. Time: 1216.6358 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #165: GFLOPs: 57.9649. Time: 1302.4692 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #166: GFLOPs: 60.2263. Time: 1253.5622 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #167: GFLOPs: 69.0211. Time: 1093.8310 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #168: GFLOPs: 56.9124. Time: 1326.5559 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #169: GFLOPs: 77.5229. Time: 973.8726 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #170: GFLOPs: 18.4030. Time: 4102.4513 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #171: GFLOPs: 76.2078. Time: 990.6787 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #172: GFLOPs: 64.3887. Time: 1172.5264 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #173: GFLOPs: 80.4290. Time: 938.6847 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #174: GFLOPs: 74.1595. Time: 1018.0422 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #175: GFLOPs: 89.3069. Time: 845.3709 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #176: GFLOPs: 37.1433. Time: 2032.6015 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #177: GFLOPs: 67.3483. Time: 1121.0011 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #178: GFLOPs: 56.1832. Time: 1343.7734 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #179: GFLOPs: 25.0856. Time: 3009.5961 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #180: GFLOPs: 81.2176. Time: 929.5707 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #181: GFLOPs: 18.6282. Time: 4052.8566 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #182: GFLOPs: 93.5290. Time: 807.2092 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #183: GFLOPs: 41.6591. Time: 1812.2663 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #184: GFLOPs: 85.6018. Time: 881.9611 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #185: GFLOPs: 72.8609. Time: 1036.1864 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #186: GFLOPs: 48.9973. Time: 1540.8511 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #187: GFLOPs: 16.8989. Time: 4467.5884 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #188: GFLOPs: 13.6062. Time: 5548.7483 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #189: GFLOPs: 38.2170. Time: 1975.4959 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #190: GFLOPs: 54.5661. Time: 1383.5967 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #191: GFLOPs: 18.2459. Time: 4137.7719 us. Best GFLOPs: 100.7786
+2026-04-07 12:33:09 [INFO] [evolutionary_search.cc:711] Generating candidates......
+2026-04-07 12:33:09 [INFO] [evolutionary_search.cc:713] Picked top 91 candidate(s) from database
+2026-04-07 12:33:09 [INFO] [evolutionary_search.cc:530] Sample-Init-Population summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:33:09 [INFO] [evolutionary_search.cc:721] Sampled 366 candidate(s)
+2026-04-07 12:33:10 [INFO] [evolutionary_search.cc:619] Evolve iter #0 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:33:11 [INFO] [evolutionary_search.cc:619] Evolve iter #1 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:33:11 [INFO] [evolutionary_search.cc:619] Evolve iter #2 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:33:12 [INFO] [evolutionary_search.cc:647] Scores of the best 64 candidates:
+[1 : 16]:	0.9610  0.8774  0.8578  0.8578  0.8475  0.8412  0.8258  0.8239  0.8137  0.8137  0.8046  0.8023  0.7996  0.7968  0.7960  0.7893
+[17 : 32]:	0.7880  0.7880  0.7865  0.7799  0.7799  0.7799  0.7795  0.7757  0.7742  0.7697  0.7696  0.7693  0.7693  0.7672  0.7669  0.7638
+[33 : 48]:	0.7615  0.7575  0.7575  0.7572  0.7564  0.7541  0.7537  0.7530  0.7530  0.7514  0.7514  0.7514  0.7484  0.7477  0.7464  0.7448
+[49 : 64]:	0.7445  0.7445  0.7430  0.7430  0.7428  0.7426  0.7398  0.7359  0.7358  0.7351  0.7348  0.7348  0.7348  0.7341  0.7337  0.7326
+2026-04-07 12:33:12 [INFO] [evolutionary_search.cc:725] Got 64 candidate(s) with evolutionary search
+2026-04-07 12:33:12 [INFO] [evolutionary_search.cc:728] Sending 64 candidates(s) for measurement
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #192: GFLOPs: 112.4968. Time: 671.1077 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #193: GFLOPs: 65.7011. Time: 1149.1059 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #194: GFLOPs: 112.3272. Time: 672.1213 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #195: GFLOPs: 98.5726. Time: 765.9073 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #196: GFLOPs: 86.8054. Time: 869.7326 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #197: GFLOPs: 89.3925. Time: 844.5619 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #198: GFLOPs: 97.0126. Time: 778.2231 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #199: GFLOPs: 102.8879. Time: 733.7839 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #200: GFLOPs: 89.1593. Time: 846.7706 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #201: GFLOPs: 68.5285. Time: 1101.6945 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #202: GFLOPs: 79.8947. Time: 944.9618 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #203: GFLOPs: 51.9126. Time: 1454.3199 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #204: GFLOPs: 65.7300. Time: 1148.6004 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #205: GFLOPs: 93.0374. Time: 811.4741 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #206: GFLOPs: 98.0553. Time: 769.9476 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #207: GFLOPs: 57.4186. Time: 1314.8604 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #208: GFLOPs: 65.0012. Time: 1161.4785 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #209: GFLOPs: 83.8404. Time: 900.4906 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #210: GFLOPs: 75.5565. Time: 999.2185 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #211: GFLOPs: 52.6884. Time: 1432.9061 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #212: GFLOPs: 68.5110. Time: 1101.9759 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #213: GFLOPs: 70.5624. Time: 1069.9385 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #214: GFLOPs: 96.1014. Time: 785.6022 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #215: GFLOPs: 51.4067. Time: 1468.6305 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #216: GFLOPs: 74.2791. Time: 1016.4023 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #217: GFLOPs: 87.2434. Time: 865.3663 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #218: GFLOPs: 74.0874. Time: 1019.0324 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #219: GFLOPs: 60.9288. Time: 1239.1100 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #220: GFLOPs: 69.4255. Time: 1087.4606 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #221: GFLOPs: 76.5855. Time: 985.7939 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #222: GFLOPs: 88.7196. Time: 850.9668 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #223: GFLOPs: 75.7865. Time: 996.1866 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #224: GFLOPs: 46.6331. Time: 1618.9666 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #225: GFLOPs: 51.8099. Time: 1457.2027 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #226: GFLOPs: 49.5934. Time: 1522.3279 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #227: GFLOPs: 74.2812. Time: 1016.3745 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #228: GFLOPs: 89.4980. Time: 843.5659 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #229: GFLOPs: 89.8103. Time: 840.6326 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #230: GFLOPs: 70.6723. Time: 1068.2746 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #231: GFLOPs: 79.8296. Time: 945.7323 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #232: GFLOPs: 65.7868. Time: 1147.6088 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #233: GFLOPs: 88.6298. Time: 851.8290 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #234: GFLOPs: 83.9358. Time: 899.4669 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #235: GFLOPs: 82.4104. Time: 916.1154 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #236: GFLOPs: 66.0779. Time: 1142.5519 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #237: GFLOPs: 81.5059. Time: 926.2825 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #238: GFLOPs: 65.6929. Time: 1149.2482 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #239: GFLOPs: 74.6169. Time: 1011.8018 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #240: GFLOPs: 84.4823. Time: 893.6487 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #241: GFLOPs: 83.1461. Time: 908.0094 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #242: GFLOPs: 64.9439. Time: 1162.5025 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #243: GFLOPs: 31.9403. Time: 2363.7030 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #244: GFLOPs: 75.6856. Time: 997.5146 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #245: GFLOPs: 82.2472. Time: 917.9339 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #246: GFLOPs: 66.5119. Time: 1135.0976 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #247: GFLOPs: 99.7513. Time: 756.8569 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #248: GFLOPs: 70.3244. Time: 1073.5606 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #249: GFLOPs: 66.7006. Time: 1131.8868 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #250: GFLOPs: 66.7002. Time: 1131.8924 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #251: GFLOPs: 14.2926. Time: 5282.2784 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #252: GFLOPs: 26.6504. Time: 2832.8840 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #253: GFLOPs: 24.8723. Time: 3035.4076 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #254: GFLOPs: 18.9420. Time: 3985.7089 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #255: GFLOPs: 17.9740. Time: 4200.3657 us. Best GFLOPs: 112.4968
+2026-04-07 12:33:43 [INFO] [evolutionary_search.cc:711] Generating candidates......
+2026-04-07 12:33:43 [INFO] [evolutionary_search.cc:713] Picked top 91 candidate(s) from database
+2026-04-07 12:33:43 [INFO] [evolutionary_search.cc:530] Sample-Init-Population summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:33:43 [INFO] [evolutionary_search.cc:721] Sampled 366 candidate(s)
+2026-04-07 12:33:44 [INFO] [evolutionary_search.cc:619] Evolve iter #0 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:33:45 [INFO] [evolutionary_search.cc:619] Evolve iter #1 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:33:45 [INFO] [evolutionary_search.cc:619] Evolve iter #2 done. Summary:
+Postproc #0 [meta_schedule.DisallowDynamicLoop(0x5bdf3ae75398)]: 0 failure(s)
+Postproc #1 [meta_schedule.RewriteParallelVectorizeUnroll(0x5bdf3b7ec188)]: 0 failure(s)
+Postproc #2 [meta_schedule.RewriteReductionBlock(0x5bdf3b9c2a68)]: 0 failure(s)
+Postproc #3 [meta_schedule.RewriteLayout(0x5bdf3b5726e8)]: 0 failure(s)
+2026-04-07 12:33:46 [INFO] [evolutionary_search.cc:647] Scores of the best 49 candidates:
+[1 : 16]:	0.8322  0.8276  0.8229  0.8123  0.8113  0.8066  0.7697  0.7694  0.7679  0.7630  0.7519  0.7510  0.7470  0.7460  0.7455  0.7445
+[17 : 32]:	0.7414  0.7369  0.7353  0.7329  0.7300  0.7254  0.7231  0.7215  0.7214  0.7191  0.7172  0.7166  0.7166  0.7165  0.7142  0.7123
+[33 : 48]:	0.7113  0.7102  0.7086  0.7083  0.7078  0.7047  0.7038  0.7036  0.7024  0.7007  0.6986  0.6937  0.6911  0.6902  0.6894  0.6891
+[49 : 49]:	0.6886
+2026-04-07 12:33:46 [INFO] [evolutionary_search.cc:725] Got 49 candidate(s) with evolutionary search
+2026-04-07 12:33:46 [INFO] [evolutionary_search.cc:728] Sending 49 candidates(s) for measurement
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #256: GFLOPs: 106.5534. Time: 708.5411 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #257: GFLOPs: 101.9880. Time: 740.2581 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #258: GFLOPs: 54.8962. Time: 1375.2761 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #259: GFLOPs: 92.4907. Time: 816.2712 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #260: GFLOPs: 78.4247. Time: 962.6747 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #261: GFLOPs: 83.7735. Time: 901.2096 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #262: GFLOPs: 92.9538. Time: 812.2046 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #263: GFLOPs: 38.4834. Time: 1961.8172 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #264: GFLOPs: 84.6094. Time: 892.3055 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #265: GFLOPs: 79.6410. Time: 947.9724 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #266: GFLOPs: 76.6573. Time: 984.8704 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #267: GFLOPs: 78.4399. Time: 962.4880 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #268: GFLOPs: 82.9041. Time: 910.6607 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #269: GFLOPs: 30.5938. Time: 2467.7392 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #270: GFLOPs: 72.5886. Time: 1040.0740 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #271: GFLOPs: 59.0564. Time: 1278.3960 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #272: GFLOPs: 54.0090. Time: 1397.8684 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #273: GFLOPs: 91.6801. Time: 823.4877 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #274: GFLOPs: 57.7702. Time: 1306.8585 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #275: GFLOPs: 86.6396. Time: 871.3966 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #276: GFLOPs: 76.1406. Time: 991.5533 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #277: GFLOPs: 74.6645. Time: 1011.1564 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #278: GFLOPs: 66.6386. Time: 1132.9399 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #279: GFLOPs: 81.2652. Time: 929.0263 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #280: GFLOPs: 75.3259. Time: 1002.2778 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #281: GFLOPs: 67.1378. Time: 1124.5155 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #282: GFLOPs: 73.5984. Time: 1025.8032 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #283: GFLOPs: 58.3185. Time: 1294.5721 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #284: GFLOPs: 83.9261. Time: 899.5708 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #285: GFLOPs: 56.5869. Time: 1334.1872 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #286: GFLOPs: 73.8566. Time: 1022.2170 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #287: GFLOPs: 79.5402. Time: 949.1744 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #288: GFLOPs: 80.8621. Time: 933.6566 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #289: GFLOPs: 81.9826. Time: 920.8958 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #290: GFLOPs: 71.2486. Time: 1059.6351 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #291: GFLOPs: 75.2205. Time: 1003.6822 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #292: GFLOPs: 69.4952. Time: 1086.3691 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #293: GFLOPs: 61.2428. Time: 1232.7561 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #294: GFLOPs: 86.4270. Time: 873.5399 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #295: GFLOPs: 72.3211. Time: 1043.9200 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #296: GFLOPs: 81.0202. Time: 931.8355 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #297: GFLOPs: 65.3243. Time: 1155.7339 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #298: GFLOPs: 60.7787. Time: 1242.1708 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #299: GFLOPs: 97.4508. Time: 774.7243 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #300: GFLOPs: 26.4480. Time: 2854.5671 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #301: GFLOPs: 71.7359. Time: 1052.4364 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #302: GFLOPs: 4.6072. Time: 16387.0100 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #303: GFLOPs: 56.8723. Time: 1327.4920 us. Best GFLOPs: 112.4968
+2026-04-07 12:34:10 [INFO] [task_scheduler.cc:137] [Task #0: main] Trial #304: GFLOPs: 18.6878. Time: 4039.9398 us. Best GFLOPs: 112.4968

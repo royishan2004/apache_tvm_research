@@ -1120,35 +1120,12 @@ python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel mlp_e
 python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel mlp_reduce
 ```
 
-### Phase 4.1b — MetaSchedule Tuning with 80/20 Best Config
+### Phase 4.1b — 80/20 Best-Config Workflow (Archived)
 
-Use this dedicated workflow to run MetaSchedule using the selected config from
-`research/results/metaschedule/best_pruned_config.json` and store results as a
-separate variant (`metaschedule_best_config`) without mixing with default
-MetaSchedule traces.
+The dedicated 80/20 best-config workflow has been retired from the active path.
+Related scripts and generated artifacts were moved to:
 
-```bash
-# general syntax
-python3 -m research.workloads.bert.metaschedule.metaschedule_tune_best_config \
-   [--all] [--kernel <kernel>] [--iterations <n>] \
-   [--best-config-path <path>] [--variant <name>] [--schedules-file <path>] [--results-file <path>]
-
-# common runs
-python3 -m research.workloads.bert.metaschedule.metaschedule_tune_best_config --all
-python3 -m research.workloads.bert.metaschedule.metaschedule_tune_best_config --kernel qkv
-
-# explicit output locations (recommended defaults shown)
-python3 -m research.workloads.bert.metaschedule.metaschedule_tune_best_config --all \
-   --best-config-path research/results/metaschedule/best_pruned_config.json \
-   --variant metaschedule_best_config \
-   --schedules-file research/results/metaschedule/best_schedules_metaschedule_best_config.json \
-   --results-file research/results/bert_matmul_results.json
-```
-
-Default outputs:
-
-- `research/results/metaschedule/best_schedules_metaschedule_best_config.json`
-- `research/results/bert_matmul_results.json` entries tagged with `variant=metaschedule_best_config`
+- `research/archive/metaschedule_8020/`
 
 ---
 
@@ -1190,45 +1167,12 @@ Results are appended to the same unified results file and appear as the
 
 ---
 
-## Phase 6 — 80/20 MetaSchedule Pruning Tuner
+## Phase 6 — 80/20 MetaSchedule Pruning Tuner (Archived)
 
-This phase runs an iterative, history-aware MetaSchedule pruning tuner that searches for a much cheaper
-tuning configuration while preserving near-baseline performance for the BERT MatMul kernels.
+The 80/20 pruning tuner has been retired from the active workflow.
+Its scripts, logs, and JSON outputs are now archived under:
 
-Basic runs (from repository root):
-
-```bash
-# Prune (default mode, runs baseline then iterative pruning)
-python3 -m research.workloads.bert.metaschedule.metaschedule_8020_tuner --iterations 1
-
-# Benchmark-only (use existing work dirs; no new tuning trials)
-python3 -m research.workloads.bert.metaschedule.metaschedule_8020_tuner --benchmark-only \
-   --best-config-path research/results/metaschedule/best_pruned_config.json
-
-# Compare saved pruned config vs baseline
-python3 -m research.workloads.bert.metaschedule.metaschedule_8020_tuner --compare-against-baseline \
-   --best-config-path research/results/metaschedule/best_pruned_config.json
-
-# Tune only one kernel (example: qkv)
-python3 -m research.workloads.bert.metaschedule.metaschedule_8020_tuner --kernel qkv --iterations 1
-
-# Common options you may want:
-#  --work-dir-base <path>    # write/read per-task DBs under this base (default research/results/metaschedule/8020)
-#  --force-rerun             # ignore cached JSON experiments and rerun
-#  --profile <name>          # annotate persisted schedules with a named profile
-```
-
-Default outputs and locations:
-
-- `research/results/metaschedule/best_pruned_config.json` — selected pruned config, metrics, and a recommended `tune_tir` block.
-- `research/results/metaschedule/pruning_experiments.json` — full experiment log and cached runs.
-- Per-task work directories under the work-dir base (default `research/results/metaschedule/8020`) containing `database_workload.json` and `database_tuning_record.json`.
-- Persisted best schedules appended via the repo helper to `research/results/metaschedule/best_schedules.json`.
-- Log file: `research/results/metaschedule/8020/metaschedule_8020_tuner.log`.
-
-Notes:
-- Ensure TVM with MetaSchedule and `numpy` are available in your Python environment.
-- The script uses the repo data-aggregator client and may prompt to confirm a profile or connection.
+- `research/archive/metaschedule_8020/`
 
 
 ---
