@@ -38,11 +38,80 @@ RESULTS_FILE = "research/results/bert_matmul_results.json"
 def _load_existing(path: str) -> List[dict]:
     if not os.path.exists(path):
         return []
-    with open(path, "r") as f:
-        payload = json.load(f)
-    if not isinstance(payload, list):
+    try:
+        with open(path, "r") as f:
+            text = f.read()
+        # Try legacy JSON list first
+        try:
+            payload = json.loads(text)
+            if isinstance(payload, list):
+                return payload
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback to NDJSON (one JSON object per line)
+        results = []
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    results.append(obj)
+            except json.JSONDecodeError:
+                # ignore malformed lines
+                continue
+        return results
+    except Exception:
         return []
-    return payload
+
+
+def _append_to_json_array(path: str, entry: dict) -> None:
+    """Append one object to a JSON array file without full rewrite.
+
+    Fast-path: in-place append by replacing the trailing `]`.
+    Fallback: if the file is not a JSON array (e.g. NDJSON), load and
+    rewrite once into JSON array format, then append.
+    """
+    entry_json = json.dumps(entry)
+
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        with open(path, "w") as f:
+            f.write("[\n")
+            f.write(entry_json)
+            f.write("\n]\n")
+        return
+
+    try:
+        with open(path, "rb+") as f:
+            payload = f.read()
+
+            end = len(payload) - 1
+            while end >= 0 and payload[end] in b" \t\r\n":
+                end -= 1
+
+            if end < 0 or payload[end] != ord("]"):
+                raise ValueError("not a JSON array")
+
+            prev = end - 1
+            while prev >= 0 and payload[prev] in b" \t\r\n":
+                prev -= 1
+            is_empty = prev >= 0 and payload[prev] == ord("[")
+
+            f.seek(end)
+            f.truncate()
+
+            separator = "\n" if is_empty else ",\n"
+            suffix = (separator + entry_json + "\n]\n").encode("utf-8")
+            f.write(suffix)
+            return
+    except Exception:
+        # Compatibility fallback for older/invalid file formats (e.g. NDJSON).
+        existing = _load_existing(path)
+        existing.append(entry)
+        with open(path, "w") as f:
+            json.dump(existing, f, indent=2)
 
 
 def _extract_decisions(trace) -> List[dict]:
@@ -95,25 +164,13 @@ def save_best_schedule(
         "decisions": _extract_decisions(trace),
     }
 
-    records = _load_existing(schedules_file)
-
-    # Replace existing entry for this variant+kernel+M if present.
-    records = [
-        r for r in records
-        if not (
-            r.get("variant", "metaschedule") == variant
-            and r.get("kernel") == kernel_name
-            and r.get("M") == M
-        )
-    ]
-    records.append(new_entry)
-
-    # Sort for stable output
-    records.sort(key=lambda r: (r.get("variant", "metaschedule"), r.get("kernel", ""), r.get("M", 0)))
-
     os.makedirs(os.path.dirname(schedules_file), exist_ok=True)
-    with open(schedules_file, "w") as f:
-        json.dump(records, f, indent=2)
+
+    # Append to JSON array without rewriting the whole file in normal cases.
+    try:
+        _append_to_json_array(schedules_file, new_entry)
+    except Exception as e:
+        print(f"⚠ Failed to append to {schedules_file}: {e}")
 
     upload_best_schedules([new_entry], profile=profile)
 
