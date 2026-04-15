@@ -103,6 +103,9 @@ In our workflow we observed that host environments such as WSL (and other native
 
 As such, observing the **standard deviation** alongside the absolute minimum execution time becomes a critical indicator of true hardware-level algorithmic efficiency. A high standard deviation signifies that the CPU encountered frequency throttling or thread migration to slower cores during a test batch. Recognizing this variance is essential when evaluating micro-optimizations, as relying purely on a mean or median metric can obfuscate genuine architectural gains under temporary thermal strain.
 
+**Continuous Execution and Thermal Throttling:**
+During extensive continuous execution (such as running many iterations or sweeping all variants back-to-back), modern CPUs quickly exhaust their turbo boost time bounds (e.g., PL2 state) and step down to lower sustained power limits (PL1). This thermal and power throttling can inflate latencies by up to 2× starting from the 2nd or 3rd consecutive iteration. To ensure baseline consistency and measure true algorithmic limits rather than the cooling capacity of the host system, benchmark runners must incorporate artificial cooldown periods (e.g., 3-second sleep) between heavy test batches, allowing the CPU to shed heat and reset boost timers.
+
 ---
 
 ### Trend 1 — Small strictly-aligned reduction tiles drastically cut latency
