@@ -311,3 +311,76 @@ Archived results/artifacts:
 Active baseline MetaSchedule workflow remains under:
 - `research/workloads/bert/metaschedule/metaschedule_tune.py`
 - `research/results/metaschedule/best_schedules.json`
+
+## Formulae Used for Best Configuration Selection
+
+To dynamically identify the "best config" that balances schedule quality and tuning speed, the tuner progressed through a logical flow of calculating retention metrics, applying strict threshold limits, and computing a final ranking score. 
+
+The following formulas directly lead to the selection of the best pruned configuration:
+
+### 1) Latency Retention
+First, to ensure schedule latencies were not severely penalized, the tuner evaluated how well the candidate retained baseline performance across $n$ different workloads (using a dataset geometric mean).
+
+$$
+\text{latency\_retention} = \left( \prod_{i=1}^{n} \frac{\text{baseline\_latency\_us}_i}{\text{candidate\_latency\_us}_i} \right)^{\frac{1}{n}}
+$$
+
+### 2) Time Reduction
+It then measured exactly how much tuning execution time was eliminated relative to the original baseline procedure:
+
+$$
+\text{time\_reduction} = \frac{\text{baseline\_total\_tuning\_time\_sec}}{\text{candidate\_total\_tuning\_time\_sec}}
+$$
+
+### 3) Constraint Filtration \& Final Score
+Before any configuration could be chosen, it had to pass a strict validity constraint. If the latency degradation exceeded a specific percentage (e.g., $12.5\%$), the configuration was rejected:
+
+$$
+\text{latency\_loss\_pct} = \left( \frac{1}{\text{latency\_retention}} - 1 \right) \times 100
+$$
+
+Finally, among all the valid candidates that survived the cutoff, the optimal balance was determined using a multi-objective optimization score. The configuration producing the highest score was elected as the best:
+
+$$
+\text{Final Score} = \text{latency\_retention} \times \text{time\_reduction}
+$$
+
+---
+
+## Pruning Dimensions (tune_tir Variants)
+
+The parameters passed to `tune_tir` were degraded along four independent dimensions to generate pruning configurations:
+
+### Global Trials Budget
+| Level | `max_trials_global` |
+|:---:|:---:|
+| 0 | 256 |
+| 1 | 192 |
+| 2 | 128 |
+| 3 | 96 |
+| 4 | 64 |
+
+### Iteration Trials Budget
+| Level | `num_trials_per_iter` |
+|:---:|:---:|
+| 0 | 64 |
+| 1 | 32 |
+| 2 | 16 |
+
+### Measurement Rigor
+| Level | `evaluator_number` | `evaluator_repeat` | `min_repeat_ms` | `rigorous_number` | `rigorous_repeat` | `rigorous_min_repeat_ms` |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 0 | 5 | 1 | 100 | 50 | 3 | 50 |
+| 1 | 4 | 1 | 80 | 40 | 2 | 40 |
+| 2 | 3 | 1 | 60 | 30 | 2 | 30 |
+| 3 | 2 | 1 | 40 | 20 | 1 | 20 |
+
+### Search Breadth (`EvolutionarySearch` knobs)
+| Level | `population_size` | `init_measured_ratio` | `design_space_samples` | `trace_replay_count` | `genetic_num_iters` | `mutation_aggressiveness` | `genetic_max_fail_count` | `eps_greedy` |
+|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| 0 | 512 | 0.20 | 50 | 5 | 4 | 0.85 | 10 | 0.05 |
+| 1 | 384 | 0.20 | 40 | 5 | 3 | 0.80 | 8 | 0.08 |
+| 2 | 256 | 0.22 | 32 | 4 | 3 | 0.75 | 7 | 0.10 |
+| 3 | 192 | 0.24 | 24 | 3 | 2 | 0.70 | 6 | 0.12 |
+| 4 | 128 | 0.28 | 16 | 2 | 2 | 0.65 | 5 | 0.15 |
+
