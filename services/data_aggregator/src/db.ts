@@ -11,13 +11,15 @@ config({ path: ".env" });
 
 const DEFAULT_IDLE_DISCONNECT_MS = 5 * 60 * 1000;
 const DEFAULT_ACTIVITY_CHECK_MS = 10 * 1000;
-const TEST_PROCESS_GREP_PATTERN = "qkv_mlp_run|metaschedule_tune|import_bert_matmul_results";
+const TEST_PROCESS_GREP_PATTERN = "qkv_mlp_run|metaschedule_tune|import_bert_matmul_results|predict_knobs";
 
 const TEST_PROCESS_PATTERNS = [
 	/research\.workloads\.bert\.matmul\.qkv_mlp_run/,
 	/research\.workloads\.bert\.metaschedule\.metaschedule_tune/,
+	/research\.workloads\.bert\.ml_schedule_predictor\.predict_knobs/,
 	/\bscripts\/import_bert_matmul_results\.py\b/,
 	/\bimport_bert_matmul_results\.py\b/,
+	/\bpredict_knobs\.py\b/,
 	/\bqkv_mlp_run\.py\b/,
 	/\bmetaschedule_tune\.py\b/,
 ];

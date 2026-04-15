@@ -15,6 +15,9 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BERT_RESULTS = ROOT / "research" / "results" / "bert_matmul_results.json"
 DEFAULT_BEST_SCHEDULES = ROOT / "research" / "results" / "metaschedule" / "best_schedules.json"
+DEFAULT_BEST_SCHEDULE_PREDICTIONS = (
+    ROOT / "research" / "results" / "ml_schedule_predictor" / "predicted_knobs_all_shapes.json"
+)
 ARCHIVED_8020_RESULTS = (
     ROOT / "research" / "archive" / "metaschedule_8020" / "results" / "metaschedule"
 )
@@ -27,12 +30,14 @@ DEFAULT_API_TIMEOUT = 300
 
 DATASET_BERT = "bert-matmul"
 DATASET_BEST = "best-schedules"
+DATASET_BEST_PREDICTIONS = "best-schedule-predictions"
 DATASET_BEST_PRUNED = "best-pruned-config"
 DATASET_PRUNING = "pruning-experiments"
 DATASET_COMPARISON = "comparison-results"
 DATASET_CHOICES = (
     DATASET_BERT,
     DATASET_BEST,
+    DATASET_BEST_PREDICTIONS,
     DATASET_BEST_PRUNED,
     DATASET_PRUNING,
     DATASET_COMPARISON,
@@ -40,6 +45,7 @@ DATASET_CHOICES = (
 
 BERT_TABLE_SUFFIX = "bert_matmul_results"
 BEST_SCHEDULES_TABLE_SUFFIX = "best_schedules"
+BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX = "best_schedule_predictions"
 BEST_PRUNED_CONFIG_TABLE_SUFFIX = "best_pruned_config"
 PRUNING_EXPERIMENTS_TABLE_SUFFIX = "pruning_experiments"
 COMPARISON_RESULTS_TABLE_SUFFIX = "comp_summary"
@@ -54,6 +60,7 @@ PROFILE_MAX_LEN = max(
         max(
             len(BERT_TABLE_SUFFIX),
             len(BEST_SCHEDULES_TABLE_SUFFIX),
+            len(BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX),
             len(BEST_PRUNED_CONFIG_TABLE_SUFFIX),
             len(PRUNING_EXPERIMENTS_TABLE_SUFFIX),
             len(COMPARISON_RESULTS_TABLE_SUFFIX),
@@ -65,6 +72,7 @@ PROFILE_MAX_LEN = max(
 
 DEFAULT_BERT_API_URL = "http://localhost:3000/api/upload/bert_matmul_results"
 DEFAULT_BEST_SCHEDULES_API_URL = "http://localhost:3000/api/upload/best_schedules"
+DEFAULT_BEST_SCHEDULE_PREDICTIONS_API_URL = "http://localhost:3000/api/upload/best_schedule_predictions"
 DEFAULT_BEST_PRUNED_CONFIG_API_URL = "http://localhost:3000/api/upload/best_pruned_config"
 DEFAULT_PRUNING_EXPERIMENTS_API_URL = "http://localhost:3000/api/upload/pruning_experiments"
 DEFAULT_COMPARISON_RESULTS_API_URL = "http://localhost:3000/api/upload/comparison_results"
@@ -75,6 +83,7 @@ if str(ROOT) not in sys.path:
 from research.workloads.common.data_aggregator_client import (  # noqa: E402
     resolve_profile as resolve_runtime_profile,
     upload_best_pruned_config,
+    upload_best_schedule_predictions,
     upload_best_schedules,
     upload_comparison_results,
     upload_pruning_experiments,
@@ -199,6 +208,17 @@ def to_bool(value: Any) -> Optional[bool]:
     return None
 
 
+def to_binary_int(value: Any) -> Optional[int]:
+    bool_value = to_bool(value)
+    if bool_value is not None:
+        return 1 if bool_value else 0
+
+    int_value = to_int(value)
+    if int_value in (0, 1):
+        return int_value
+    return None
+
+
 def normalize_bert_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     kernel = entry.get("kernel")
     variant = entry.get("variant")
@@ -293,6 +313,50 @@ def normalize_best_schedule_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[
         "trace": trace,
         "decisions": decisions,
         "decisions_json": decisions_json,
+    }, None
+
+
+def normalize_best_schedule_prediction_entry(
+    entry: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    kernel_raw = entry.get("kernel")
+    kernel = kernel_raw.strip() if isinstance(kernel_raw, str) else ""
+
+    m = to_int(entry.get("M", entry.get("m")))
+    k = to_int(entry.get("K", entry.get("k")))
+    n = to_int(entry.get("N", entry.get("n")))
+
+    vector_width = to_int(entry.get("vector_width", entry.get("vectorWidth")))
+    unroll_factor = to_int(entry.get("unroll_factor", entry.get("unrollFactor")))
+    cache_write_used = to_binary_int(entry.get("cache_write_used", entry.get("cacheWriteUsed")))
+    reduction_decompose_used = to_binary_int(
+        entry.get("reduction_decompose_used", entry.get("reductionDecomposeUsed"))
+    )
+
+    if not kernel:
+        return None, "Missing kernel"
+    if m is None or k is None or n is None:
+        return None, "Missing shape"
+    if vector_width is None or unroll_factor is None:
+        return None, "Missing vector_width or unroll_factor"
+    if cache_write_used is None or reduction_decompose_used is None:
+        return None, "Invalid cache_write_used or reduction_decompose_used"
+
+    payload_json = canonical_json(entry)
+    if payload_json is None:
+        return None, "Invalid prediction payload"
+
+    return {
+        "kernel": kernel,
+        "m": m,
+        "k": k,
+        "n": n,
+        "vector_width": vector_width,
+        "unroll_factor": unroll_factor,
+        "cache_write_used": cache_write_used,
+        "reduction_decompose_used": reduction_decompose_used,
+        "payload_json": payload_json,
+        "payload": entry,
     }, None
 
 
@@ -721,6 +785,17 @@ def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[s
                 normalized["trace"],
                 normalized["decisions_json"],
             )
+        elif dataset == DATASET_BEST_PREDICTIONS:
+            normalized, error = normalize_best_schedule_prediction_entry(entry)
+            if error:
+                errors.append(f"Entry {idx}: {error}")
+                continue
+            key = (
+                normalized["kernel"],
+                normalized["m"],
+                normalized["k"],
+                normalized["n"],
+            )
 
         else:
             errors.append(f"Unsupported dataset: {dataset}")
@@ -832,6 +907,29 @@ def run_api_import(
             total += len(chunk)
 
         print(f"Uploaded {total} rows via data_aggregator API.")
+        return 0
+
+    if dataset == DATASET_BEST_PREDICTIONS:
+        default_url = DEFAULT_BEST_SCHEDULE_PREDICTIONS_API_URL
+        env_url = "DATA_AGGREGATOR_BEST_SCHEDULE_PREDICTIONS_URL"
+
+        # Snapshot semantics: send all shapes together so stale-row cleanup is correct.
+        ok = upload_best_schedule_predictions(
+            rows,
+            url=api_url,
+            profile=profile,
+            dedupe=dedupe,
+            timeout=timeout,
+        )
+        if not ok:
+            effective_url = api_url or os.environ.get(env_url, default_url)
+            print(
+                "Upload failed. "
+                f"Check {env_url} ({effective_url}) and that the server is running."
+            )
+            return 1
+
+        print(f"Uploaded {len(rows)} rows via data_aggregator API.")
         return 0
 
     if dataset == DATASET_BEST_PRUNED:
@@ -1252,6 +1350,53 @@ def ensure_direct_table(cur: Any, dataset: str, profile: str, table_name: str) -
         )
         return
 
+    if dataset == DATASET_BEST_PREDICTIONS:
+        suffix = BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX
+        rename_legacy_tables(cur, profile, suffix, table_name)
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {qident(table_name)} (
+                id uuid primary key default gen_random_uuid(),
+                ingested_at timestamptz not null default now(),
+                updated_at timestamptz not null default now(),
+                kernel text not null,
+                m integer not null,
+                k integer not null,
+                n integer not null,
+                vector_width integer not null,
+                unroll_factor integer not null,
+                cache_write_used integer not null,
+                reduction_decompose_used integer not null,
+                payload jsonb not null default '{{}}'::jsonb
+            )
+            """
+        )
+
+        index_key = f"{table_key(profile)}_{suffix}"
+        idx_shape = clamp_identifier(f"idx_{index_key}_shape")
+        idx_kernel = clamp_identifier(f"idx_{index_key}_kernel")
+        idx_knobs = clamp_identifier(f"idx_{index_key}_knobs")
+        uniq_shape = clamp_identifier(f"uniq_{index_key}_shape")
+
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_shape)} "
+            f"ON {qident(table_name)} (kernel, m, k, n)"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_kernel)} "
+            f"ON {qident(table_name)} (kernel)"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_knobs)} "
+            f"ON {qident(table_name)} (vector_width, unroll_factor)"
+        )
+        cur.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {qident(uniq_shape)} "
+            f"ON {qident(table_name)} (kernel, m, k, n)"
+        )
+        return
+
     if dataset == DATASET_BEST_PRUNED:
         suffix = BEST_PRUNED_CONFIG_TABLE_SUFFIX
         rename_legacy_tables(cur, profile, suffix, table_name)
@@ -1641,6 +1786,104 @@ def run_direct_import_best_schedules(
         return 1
 
     print(f"Imported {inserted} rows. Skipped {skipped} duplicates.")
+    return 0
+
+
+def run_direct_import_best_schedule_predictions(
+    rows: List[Dict[str, Any]],
+    db_url: str,
+    table_name: str,
+    profile: str,
+    chunk_size: int,
+    dedupe: bool,
+) -> int:
+    try:
+        import psycopg
+    except ImportError:
+        print("psycopg is required. Install with: pip install psycopg[binary]")
+        return 1
+
+    _ = dedupe  # Snapshot upsert semantics are shape-keyed and always conflict-safe.
+
+    upsert_sql = f"""
+        INSERT INTO {qident(table_name)} (
+            kernel,
+            m,
+            k,
+            n,
+            vector_width,
+            unroll_factor,
+            cache_write_used,
+            reduction_decompose_used,
+            payload
+        )
+        VALUES (
+            %(kernel)s,
+            %(m)s,
+            %(k)s,
+            %(n)s,
+            %(vector_width)s,
+            %(unroll_factor)s,
+            %(cache_write_used)s,
+            %(reduction_decompose_used)s,
+            %(payload_json)s::jsonb
+        )
+        ON CONFLICT (kernel, m, k, n) DO UPDATE SET
+            vector_width = EXCLUDED.vector_width,
+            unroll_factor = EXCLUDED.unroll_factor,
+            cache_write_used = EXCLUDED.cache_write_used,
+            reduction_decompose_used = EXCLUDED.reduction_decompose_used,
+            payload = EXCLUDED.payload,
+            updated_at = now()
+    """
+
+    upserted = 0
+    pending: List[Dict[str, Any]] = []
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                ensure_direct_table(cur, DATASET_BEST_PREDICTIONS, profile, table_name)
+                conn.commit()
+
+                for row in rows:
+                    pending.append(row)
+                    if len(pending) >= chunk_size:
+                        cur.executemany(upsert_sql, pending)
+                        conn.commit()
+                        upserted += len(pending)
+                        pending.clear()
+
+                if pending:
+                    cur.executemany(upsert_sql, pending)
+                    conn.commit()
+                    upserted += len(pending)
+
+                shape_keys = [
+                    (row["kernel"], row["m"], row["k"], row["n"])
+                    for row in rows
+                ]
+                if shape_keys:
+                    placeholders = ", ".join(["(%s, %s, %s, %s)"] * len(shape_keys))
+                    args: List[Any] = []
+                    for kernel, m_value, k_value, n_value in shape_keys:
+                        args.extend([kernel, m_value, k_value, n_value])
+
+                    cur.execute(
+                        (
+                            f"DELETE FROM {qident(table_name)} "
+                            f"WHERE (kernel, m, k, n) NOT IN ({placeholders})"
+                        ),
+                        tuple(args),
+                    )
+                    conn.commit()
+    except psycopg.OperationalError as exc:
+        print(f"Connection failed: {exc}")
+        if "sslrootcert" in str(exc) or "certificate" in str(exc):
+            print("Hint: try --sslmode=require (Neon default) or --sslrootcert=system.")
+        return 1
+
+    print(f"Upserted {upserted} rows (best_schedule_predictions snapshot mode).")
     return 0
 
 
@@ -2037,7 +2280,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Import benchmark JSON files into Neon with profile-specific tables. "
-            "Commands: bert-matmul | best-schedules | best-pruned-config | pruning-experiments | comparison-results"
+            "Commands: bert-matmul | best-schedules | best-schedule-predictions | "
+            "best-pruned-config | pruning-experiments | comparison-results"
         )
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -2053,6 +2297,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Import research/results/metaschedule/best_schedules.json",
     )
     add_common_args(best_parser, DEFAULT_BEST_SCHEDULES)
+
+    best_predictions_parser = subparsers.add_parser(
+        DATASET_BEST_PREDICTIONS,
+        help="Import research/results/ml_schedule_predictor/predicted_knobs_all_shapes.json",
+    )
+    add_common_args(best_predictions_parser, DEFAULT_BEST_SCHEDULE_PREDICTIONS)
 
     best_pruned_parser = subparsers.add_parser(
         DATASET_BEST_PRUNED,
@@ -2152,6 +2402,17 @@ def main() -> int:
     if dataset == DATASET_BEST:
         table_name = profile_table_name(normalized_profile, BEST_SCHEDULES_TABLE_SUFFIX)
         return run_direct_import_best_schedules(
+            rows,
+            db_url=db_url,
+            table_name=table_name,
+            profile=normalized_profile,
+            chunk_size=args.chunk_size,
+            dedupe=not args.no_dedupe,
+        )
+
+    if dataset == DATASET_BEST_PREDICTIONS:
+        table_name = profile_table_name(normalized_profile, BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX)
+        return run_direct_import_best_schedule_predictions(
             rows,
             db_url=db_url,
             table_name=table_name,

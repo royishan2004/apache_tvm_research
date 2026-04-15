@@ -46,6 +46,24 @@ export const bestSchedules = pgTable("best_schedules", {
     index("idx_best_schedules_variant_kernel_shape").on(table.variant, table.kernel, table.m, table.k, table.n),
     index("idx_best_schedules_latency").on(table.latencyUs),
 ]);
+export const bestSchedulePredictions = pgTable("best_schedule_predictions", {
+    id: uuid("id").primaryKey().default(sql `gen_random_uuid()`),
+    ingestedAt: timestamp("ingested_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+    kernel: text("kernel").notNull(),
+    m: integer("m").notNull(),
+    k: integer("k").notNull(),
+    n: integer("n").notNull(),
+    vectorWidth: integer("vector_width").notNull(),
+    unrollFactor: integer("unroll_factor").notNull(),
+    cacheWriteUsed: boolean("cache_write_used").notNull().default(false),
+    reductionDecomposeUsed: boolean("reduction_decompose_used").notNull().default(false),
+    payload: jsonb("payload").$type().notNull().default(sql `'{}'::jsonb`),
+}, (table) => [
+    uniqueIndex("uniq_best_schedule_predictions_shape").on(table.kernel, table.m, table.k, table.n),
+    index("idx_best_schedule_predictions_kernel").on(table.kernel),
+    index("idx_best_schedule_predictions_knobs").on(table.vectorWidth, table.unrollFactor),
+]);
 export const bestPrunedConfig = pgTable("best_pruned_config", {
     id: uuid("id").primaryKey().default(sql `gen_random_uuid()`),
     ingestedAt: timestamp("ingested_at", { withTimezone: true }).defaultNow().notNull(),

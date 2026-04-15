@@ -692,133 +692,39 @@ On the regenerated dataset and fresh re-runs, the current rule-based
 system is typically **~1.52× of MetaSchedule performance** while
 satisfying all three properties.
 
-## 80/20 MetaSchedule Tuning Profiler
+---
+
+## ML-Guided Schedule Generation (LightGBM Warm-Start)
 
 ### Objective
-The standard Apache TVM MetaSchedule auto-tuner runs an exhaustive evolutionary search, generating thousands of candidates to find the optimal schedule. While this provides a high performance ceiling, the absolute tuning time (often tens of hours on CPUs for full models) creates a significant bottleneck for rapid iterative research. 
+While the deterministic rule-based schedule provides a zero-search-cost, highly interpretable baseline, it historically leaves a ~1.5× performance gap compared to deep evolutionary search methods like MetaSchedule. The **ML-Guided** approach sits between these paradigms: it seeks to predict the most impactful structural transformations and schedule parameters (knobs) *a priori* using extremely lightweight machine learning models, achieving near-MetaSchedule performance without the extensive trial-and-error compile times.
 
-The **80/20 Tuner** was developed to bridge this gap. The objective is to identify a minimal tuning configuration profile that recovers ~80-90% of the maximum achievable performance executing within only ~20% of the baseline computational tuning budget.
+### Methodology & Model Selection
+We employ **LightGBM** (using both `LGBMRegressor` and `LGBMClassifier`) to map canonical kernel geometries `(M, K, N)` to optimal structural schedule configurations. LightGBM was selected for its robustness on small, sparse tabular datasets and its fast inference time, meaning schedule prediction remains essentially instantaneous at compile time.
 
-### Pruning Parameters & Considerations
-The tuner dynamically scales down the core dimensions of the MetaSchedule context. We categorize these into three primary tuning levers. The right-most column indicates the concise purpose of each parameter; the pruned columns are annotated for the validation environments.
+The training pipeline operates in three stages:
+1. **Data Extraction**: Raw MetaSchedule tuning logs (`best_schedules.json`) are parsed to extract the exact TIR schedule instructions and loop configurations that yielded the highest throughput per shape.
+2. **Handling Sparse Datasets**: To prevent degenerate model convergence on tiny datasets, the trainer dynamically adjusts `min_child_samples` and `min_data_in_bin` thresholds, drops constant features, and falls back to pure scalar payloads for invariant targets.
+3. **Training & Persistence**: Distinct models are serialized for each target schedule knob.
 
-| Pruning Category | Parameter | Baseline | 80/20 Pruned (i5-1235U) | 80/20 Pruned (i7-13700) | Description | Impact / Reasoning |
-| :--- | :--- | :---: | :---: | :---: | :--- | :--- |
-| **Search Space Budget** | `max_trials_global` | 256 | **64** | **64** | Total number of candidate schedules the tuner will try. | Limits total schedule extraction and reduces overall tuning time. |
-|  | `max_trials_per_task` | 256 | **64** | **64** | Max candidate schedules tried per kernel/shape. | Strips out exhaustive tails per task and focuses effort on promising candidates. |
-|  | `population_size` | 512 | **384** | **384** | Number of candidate schedules kept each generation. | Reduces candidate diversity to speed up the search. |
-| **Measurement Fidelity** | `evaluator_number` | 5 | **2** | **4** | Number of timing repeats per measurement. | Fewer repeats reduce measurement time but can increase noise. |
-|  | `min_repeat_ms` | 100 | **40** | **80** | Minimum time (ms) for each timing run. | Shorter timing windows speed tuning but may be noisier. |
-|  | `rigorous_number` | 50 | **20** | **40** | Number of runs used for a thorough timing check. | Less strict validation shortens runtime while keeping some verification. |
-| **Evolutionary Search** | `genetic_num_iters` | 4 | **3** | **3** | Number of genetic search iterations (generations). | Fewer generations mean less exploration and shorter tuning time. |
-|  | `mutation_aggressiveness` | 0.85 | **0.80** | **0.80** | How aggressive mutations are during the search. | Lower values make the search more conservative under small budgets. |
-|  | `eps_greedy` | 0.05 | **0.08** | **0.08** | Probability of picking a random candidate to explore. | Slightly increases chance to discover useful candidates when population is smaller. |
+### Predicted Schedule Knobs
+The pipeline predicts four distinct schedule transformation knobs that define the loop structure before tiling rules are applied:
 
-### Methodology
-The execution is structured as an automated loop that iteratively shrinks the tuning search space to find the optimal trade-off point:
-1. **Apply Limits:** Gradually apply scaling factors to reduce the tuning parameters (e.g. trials, population size).
-2. **Evaluate:** Run MetaSchedule iterations tracking how the generated schedule performs.
-3. **Find the Sweet Spot:** Automatically detect the knee curve where tuning-time reduction starts to produce unacceptable runtime regressions.
-4. **Validate:** Lock down this pruned configuration and validate it across all other kernel shapes and batch sizes to verify the measured performance retention.
+| Feature | Type | Model Type | Relevance |
+|:---|:---|:---|:---|
+| `vector_width` | Continuous | Regressor | Defines the innermost spatial vectorization lane width. Typically maps to hardware AVX bounds (e.g., 32 or 64). |
+| `unroll_factor` | Continuous | Regressor | Informs the `pragma_auto_unroll_max_step` bound, directly impacting LLVM's inner-loop instruction expansion (e.g., 16, 64, 512). |
+| `cache_write_used` | Boolean | Classifier | Predicts whether to accumulate partial sums in a local register/L1 buffer before committing to the global C tensor. |
+| `reduction_decompose_used` | Boolean | Classifier | Predicts whether the accumulation zero-initialization (`T.init`) should be decoupled from the core multiply-add loop. |
 
-#### Scoring & Selection
-To rank candidate pruned configurations we compute a compact scalar score that balances retained runtime quality against tuning-time savings. The key metrics are:
+### Validation & Results
+Through bulk compilation sweeps (generating predictions for all 24 MatMul M-shapes across QKV and MLP layers), the ML predictor generates an overwriteable `predicted_knobs_all_shapes.json` artifact. 
 
-- $\text{latency\_retention}$ — geometric mean of per-shape baseline / candidate latencies (higher is better).
-- $\text{time\_reduction}$ — the ratio of baseline total tuning time to candidate total tuning time (higher is better).
-- $\text{trial\_reduction}$ — the ratio of baseline total trials to candidate total trials (higher is better).
+The TVM `ml_guided` runtime dynamically ingests these knobs to construct the TIR schedule:
+- **Performance**: Provides a data-driven warm-start that structurally mimics MetaSchedule's best topologies—specifically capturing non-linear threshold crossings (like when `unroll_factor` should drop off for very large batch rows).
+- **Stability mechanism**: To handle out-of-distribution shapes or missing metrics, the scheduler design is explicitly strictly defensive. If the loop handles are invalidated (e.g., trying to sequence `reverse_compute_at` incorrectly after a `fuse` operation) or ML artifacts are missing, the compiler safely falls back to the deterministic `rule_based` schedule.
 
-The primary ranking score used in the tuner is:
-
-$$
-
-   \text{score} = \text{latency\_retention} \times \text{time\_reduction}
-$$
-
-Other derived quantities used as constraints or filters include:
-
-$$
-      \text{time\_reduction} = \frac{\text{baseline\_total\_tuning\_time\_sec}}{\text{candidate\_total\_tuning\_time\_sec}}\quad,\
-\quad \text{trial\_reduction} = \frac{\text{baseline\_total\_trials}}{\text{candidate\_total\_trials}}
-$$
-
-The tuner also computes a conservative latency loss percentage for filtering:
-
-$$
-      \text{latency\_loss\_pct} = \max\left(0, \left(\frac{1}{\max(\text{latency\_retention},\,\epsilon)} - 1\right) \times 100\right) \qquad (\epsilon = 1\times 10^{-9})
-$$
-
-And the fractional time/trial budgets used for 80/20 eligibility:
-
-$$
-      \text{time\_fraction} = \frac{1}{\text{time\_reduction}}\quad,\quad \text{trial\_fraction} = \frac{1}{\text{trial\_reduction}}
-$$
-
-Selection rules (defaults used by the script):
-
-- A candidate is considered *valid* if all tasks succeeded and $\text{latency\_loss\_pct} \leq$ `--max-latency-loss-pct` (default `12.5`).
-- For strict 80/20 selection we require:
-   - $\text{latency\_retention} \geq$ `--target-retention` (default `0.85`), and
-   - $\text{time\_fraction} \leq 0.30$ and $\text{trial\_fraction} \leq 0.30$ (i.e., ≤30% of baseline tuning cost).
-- If multiple candidates satisfy these constraints, the tuner picks the candidate with the highest $\text{score}$. If none satisfy the strict constraints, the tuner falls back to the best valid candidate by $\text{score}$.
-
-These formulas and filters provide an explicit and reproducible decision surface: the tuner prefers configurations that preserve runtime (high $\text{latency\_retention}$) while dramatically cutting tuning cost (high $\text{time\_reduction}$), and avoids candidates that introduce large worst-case regressions (bounded by `--max-latency-loss-pct`).
-
-### Profiling Results
-
-#### Validation Environment: Intel Core i5-1235U
-
-We compared the heavily pruned configuration against the exhaustive default MetaSchedule baseline. Testing spanned all three Transformer MatMul kernels (*QKV*, *MLP-expand*, *MLP-reduce*) over three standard sequence lengths. By trading excessive structural sampling for speed, the optimized config fundamentally altered the computational distribution of the workloads without sacrificing net latency. 
-
-| Metric | Baseline Tuning | 80/20 Pruned Candidate | Delta |
-| :--- | :--- | :--- | :--- |
-| **Total Tuning Time** | 29m 22s | 5m 41s | **↓ 80.6%** reduction |
-| **Geomean Latency (All Kernels)** | 4.228 ms | 3.940 ms | **↓ 6.8%** (Faster execution) |
-| **Overall Performance Retention** | 1.000x | **1.073x** | **+7.3%** speedup relative offset |
-
-*Note: Retention > 1.0x indicates the Pruned schedule mathematically outperformed the baseline due to noise-floor variance and reduced over-fitting.*
-
-**Shape-Wise Impact Breakdown (i5-1235U)**
-
-| Kernel / Workload | Baseline Latency (us) | 80/20 Latency (us) | Latency Delta | Baseline Exec Time (s) | 80/20 Exec Time (s) |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **QKV** (`16×768×768`) | 218.06 | **208.67** | **↓ 4.3%** | 0.104 | **0.061** |
-| **QKV** (`128×768×768`) | 2148.36 | **1680.52** | **↓ 21.8%** | 0.149 | **0.052** |
-| **QKV** (`384×768×768`) | 5935.55 | **6672.58** | **↑ 12.4%** | 0.224 | **0.056** |
-| **MLP-expand** (`16×768×3072`) | 1246.70 | **1044.18** | **↓ 16.2%** | 0.191 | **0.055** |
-| **MLP-expand** (`128×768×3072`) | 6293.34 | **8972.48** | **↑ 42.6%** | 0.201 | **0.058** |
-| **MLP-expand** (`384×768×3072`) | 26167.09 | **87768.81** | **↑ 235.4%** | 0.175 | **0.060** |
-| **MLP-reduce** (`16×3072×768`) | 1404.97 | **1115.98** | **↓ 20.6%** | 0.192 | **0.054** |
-| **MLP-reduce** (`128×3072×768`) | 6380.27 | **5761.25** | **↓ 9.7%** | 0.252 | **0.055** |
-| **MLP-reduce** (`384×3072×768`) | 84429.80 | **18526.32** | **↓ 78.1%** | 0.198 | **0.056** |
-
-#### Validation Environment: Intel Core i7-13700
-
-We also compared the optimal heavily pruned configuration on the Intel Core i7-13700 environment.
-
-| Metric | Baseline Tuning | 80/20 Pruned Candidate | Delta |
-| :--- | :--- | :--- | :--- |
-| **Total Tuning Time** | 20m 10s | 4m 43s | **↓ 76.6%** reduction |
-| **Geomean Latency (All Kernels)** | 1.761 ms | 1.685 ms | **↓ 4.3%** (Faster execution) |
-| **Overall Performance Retention** | 1.000x | **1.045x** | **+4.5%** speedup relative offset |
-
-*Note: Retention > 1.0x indicates the Pruned schedule mathematically outperformed the baseline due to noise-floor variance and reduced over-fitting.*
-
-**Shape-Wise Impact Breakdown (i7-13700)**
-
-| Kernel / Workload | Baseline Latency (us) | 80/20 Latency (us) | Latency Delta | Baseline Exec Time (s) | 80/20 Exec Time (s) |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **QKV** (`16×768×768`) | 97.45 | **115.39** | **↑ 18.4%** | 0.173 | **0.035** |
-| **QKV** (`128×768×768`) | 774.49 | **1069.13** | **↑ 38.0%** | 0.111 | **0.030** |
-| **QKV** (`384×768×768`) | 2446.35 | **2654.19** | **↑ 8.5%** | 0.111 | **0.029** |
-| **MLP-expand** (`16×768×3072`) | 648.58 | **454.82** | **↓ 29.9%** | 0.116 | **0.035** |
-| **MLP-expand** (`128×768×3072`) | 7078.00 | **3945.26** | **↓ 44.3%** | 0.118 | **0.025** |
-| **MLP-expand** (`384×768×3072`) | 14494.26 | **10937.05** | **↓ 24.5%** | 0.132 | **0.042** |
-| **MLP-reduce** (`16×3072×768`) | 435.53 | **488.90** | **↑ 12.3%** | 0.122 | **0.024** |
-| **MLP-reduce** (`128×3072×768`) | 3763.97 | **4073.42** | **↑ 8.2%** | 0.121 | **0.031** |
-| **MLP-reduce** (`384×3072×768`) | 8110.21 | **8581.14** | **↑ 5.8%** | 0.131 | **0.037** |
-
-These results visually validate the overarching 80/20 constraint loop strategy: shedding generation overhead reduces exhaustive exploration and can trigger wild latency variances per iteration (e.g. `+235%` on batch size `384` for MLP-expand on i5, juxtaposed with `-78%` on the identically sized MLP-reduce shape). Despite this volatility at the individual node level, the aggregated model geometry consistently uncovers actionable local minima across the full transformer architecture, vastly bridging the cost-to-performance barrier for rapid testing.
+This integration ultimately closes the loop between manual heuristics and black-box automation, creating a data-driven compiler pass that is fast, explainable, and resilient.
 
 ---
 
@@ -842,7 +748,7 @@ D --> E
 A -- tvm_initialisation_checks --> B
 A -- schedule_analysis --> C
 
-H["schedule_recipes.py → apply_schedule()<br>Select variant: baseline / K-tiling / parallelisation / vectorisation / full / rule_based"]
+H["schedule_recipes.py → apply_schedule()<br>Select variant: baseline / K-tiling / parallelisation / vectorisation / full / rule_based / ml_guided"]
 H1["rule_based_schedule.py<br>apply_rule_based_schedule()<br>Auto-pick TM, TN, TK tiles<br>Split → Reorder → Fuse →<br>Parallelize → Vectorize → Unroll"]
 
 G{"Choose scheduling<br>strategy"}
@@ -876,7 +782,7 @@ T4 --> T5
 C --> G
 
 G -- AutoTune (MetaSchedule) --> I
-G -- Manual / Rule-based --> K
+G -- Manual / Rule-based / ML-guided --> K
 
 H -- rule_based --> H1
 H -- baseline / K-tiling / parallelisation / vectorisation / full --> H2
@@ -1123,15 +1029,6 @@ python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel mlp_e
 python3 -m research.workloads.bert.metaschedule.metaschedule_tune --kernel mlp_reduce
 ```
 
-### Phase 4.1b — 80/20 Best-Config Workflow (Archived)
-
-The dedicated 80/20 best-config workflow has been retired from the active path.
-Related scripts and generated artifacts were moved to:
-
-- `research/archive/metaschedule_8020/`
-
----
-
 ### Phase 4.2 — Result Extraction
 
 Results are recorded directly from tuning logs into the unified results file:
@@ -1170,12 +1067,78 @@ Results are appended to the same unified results file and appear as the
 
 ---
 
-## Phase 6 — 80/20 MetaSchedule Pruning Tuner (Archived)
+## Phase 6 — ML-Guided Schedule (LightGBM Warm Start)
 
-The 80/20 pruning tuner has been retired from the active workflow.
-Its scripts, logs, and JSON outputs are now archived under:
+This phase uses a lightweight LightGBM pipeline to predict strong initial
+schedule knobs (`vector_width`, `unroll_factor`, `cache_write_used`,
+`reduction_decompose_used`) from historical best MetaSchedule traces.
+The `ml_guided` variant remains defensive: if model artifacts are missing or
+prediction fails, it falls back to `rule_based`.
 
-- `research/archive/metaschedule_8020/`
+### Phase 6.1 — Build the Training Dataset
+
+```bash
+python3 research/workloads/bert/ml_schedule_predictor/extract_training_data.py --verbose
+```
+
+Output:
+- `research/results/ml_schedule_predictor/training_dataset.csv`
+
+### Phase 6.2 — Train LightGBM Knob Models
+
+```bash
+python3 research/workloads/bert/ml_schedule_predictor/train_lightgbm_knob_models.py --verbose
+```
+
+Outputs:
+- `research/results/ml_schedule_predictor/models/vector_width_model.pkl`
+- `research/results/ml_schedule_predictor/models/unroll_model.pkl`
+- `research/results/ml_schedule_predictor/models/cache_write_model.pkl`
+- `research/results/ml_schedule_predictor/models/decompose_model.pkl`
+
+### Phase 6.3 — (Optional) Predict Knobs for All Kernels and Shapes
+
+```bash
+# print all predictions and save JSON under research/results/ml_schedule_predictor/
+python3 research/workloads/bert/ml_schedule_predictor/predict_knobs.py --all-shapes --verbose
+
+# optional: override JSON output path
+python3 research/workloads/bert/ml_schedule_predictor/predict_knobs.py --all-shapes --output-json research/results/ml_schedule_predictor/predicted_knobs_all_shapes.json
+```
+
+Default output:
+- `research/results/ml_schedule_predictor/predicted_knobs_all_shapes.json`
+
+Note: the JSON file is overwritten on every run.
+
+By default, `--all-shapes` also uploads the same snapshot to the data aggregator endpoint
+`/api/upload/best_schedule_predictions`, using your resolved CPU profile so each CPU
+lands in a separate profile-scoped table.
+
+Useful flags:
+- `--no-upload` to keep the run local-only
+- `--profile <name>` to force a target profile
+- `--upload-url <url>` to override `DATA_AGGREGATOR_BEST_SCHEDULE_PREDICTIONS_URL`
+- `--upload-timeout <seconds>` to increase request timeout
+
+### Phase 6.4 — Run ML-Guided Benchmark Sweeps
+
+```bash
+# one kernel
+python3 -m research.workloads.bert.matmul.qkv_mlp_run ml_guided --kernel qkv
+python3 -m research.workloads.bert.matmul.qkv_mlp_run ml_guided --kernel mlp_expand
+python3 -m research.workloads.bert.matmul.qkv_mlp_run ml_guided --kernel mlp_reduce
+
+# all kernels in one run
+python3 -m research.workloads.bert.matmul.qkv_mlp_run ml_guided --all-kernels
+```
+
+### Phase 6.5 — Refresh ML Artifacts After New MetaSchedule Data
+
+```bash
+python3 research/workloads/bert/ml_schedule_predictor/extract_training_data.py
+python3 research/workloads/bert/ml_schedule_predictor/train_lightgbm_knob_models.py
+```
 
 
 ---
@@ -1194,5 +1157,6 @@ Its scripts, logs, and JSON outputs are now archived under:
 - ✔ Write-back vectorization aligned to `j_pack=32` (strict ABBA geomean `0.9605×` vs previous write-back)  
 - ✔ Performance gap improved to ~1.52× of MetaSchedule (latest full re-run)  
 - ✔ Further enhancement investigation (TK=4, cache_read, TN=128 — documented)  
+- ✔ ML-guided LightGBM warm-start pipeline integrated (`ml_guided` variant + predictor scripts)
 
-**Next step:** Phase 6 — Generalization to additional Transformer workloads
+**Next step:** Phase 7 — Generalization to additional Transformer workloads

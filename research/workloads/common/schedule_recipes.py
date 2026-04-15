@@ -4,6 +4,13 @@ from research.workloads.common.rule_based_schedule import (
     apply_rule_based_schedule,
 )
 
+try:
+    from research.workloads.bert.ml_schedule_predictor.ml_guided_schedule import (
+        apply_ml_guided_schedule,
+    )
+except ImportError:
+    apply_ml_guided_schedule = None
+
 
 def _sched_k4(mod):
     sch = tvm.tir.Schedule(mod)
@@ -190,6 +197,22 @@ def apply_schedule(mod, variant: str, **kwargs):
             )
         return apply_rule_based_schedule(mod, M, K, N, kernel)
 
+    if variant == "ml_guided":
+        M = kwargs.get("M")
+        K = kwargs.get("K")
+        N = kwargs.get("N")
+        kernel = kwargs.get("kernel", "qkv")
+        if M is None or K is None or N is None:
+            raise ValueError(
+                "ml_guided variant requires M=, K=, N= keyword arguments"
+            )
+
+        if apply_ml_guided_schedule is None:
+            print("    [ml_guided] predictor dependencies unavailable, falling back to rule_based")
+            return apply_rule_based_schedule(mod, M, K, N, kernel)
+
+        return apply_ml_guided_schedule(mod, M=M, K=K, N=N, kernel_name=kernel)
+
     if variant not in RECIPES:
         raise ValueError(
             f"Unknown variant '{variant}'. "
@@ -201,4 +224,4 @@ def apply_schedule(mod, variant: str, **kwargs):
 
 def available_variants():
     """Return sorted list of all variant names including baseline."""
-    return ["baseline", "rule_based"] + sorted(RECIPES.keys())
+    return ["baseline", "rule_based", "ml_guided"] + sorted(RECIPES.keys())

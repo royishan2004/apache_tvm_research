@@ -9,6 +9,7 @@ export const uploadRouter = new OpenAPIHono()
 
 const TABLE_SUFFIX = 'bert_matmul_results'
 const BEST_SCHEDULES_TABLE_SUFFIX = 'best_schedules'
+const BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX = 'best_schedule_predictions'
 const BEST_PRUNED_CONFIG_TABLE_SUFFIX = 'best_pruned_config'
 const PRUNING_EXPERIMENTS_TABLE_SUFFIX = 'pruning_experiments'
 const COMPARISON_RESULTS_TABLE_SUFFIX = 'comp_summary'
@@ -20,6 +21,7 @@ const TABLE_NAME_MAX = 63
 const MAX_TABLE_SUFFIX_LEN = Math.max(
   TABLE_SUFFIX.length,
   BEST_SCHEDULES_TABLE_SUFFIX.length,
+  BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX.length,
   BEST_PRUNED_CONFIG_TABLE_SUFFIX.length,
   PRUNING_EXPERIMENTS_TABLE_SUFFIX.length,
   COMPARISON_RESULTS_TABLE_SUFFIX.length,
@@ -69,6 +71,18 @@ type BestScheduleInsertRow = {
   stdUs: number
   trace: string
   decisionsJson: string
+}
+
+type BestSchedulePredictionInsertRow = {
+  kernel: string
+  m: number
+  k: number
+  n: number
+  vectorWidth: number
+  unrollFactor: number
+  cacheWriteUsed: number
+  reductionDecomposeUsed: number
+  payloadJson: string
 }
 
 type BestPrunedConfigInsertRow = {
@@ -448,6 +462,162 @@ uploadRouter.openapi(uploadBestSchedulesRoute, async (c) => {
   return c.json(
     { ok: true, inserted, duplicates, rejected: errors.length, errors },
     200
+  )
+})
+
+const uploadBestSchedulePredictionsRoute = createRoute({
+  method: 'post',
+  path: '/api/upload/best_schedule_predictions',
+  tags: ['ingestion'],
+  summary: 'Upload ML best schedule predictions',
+  description:
+    'Accepts predicted_knobs_all_shapes.json and refreshes a profile-scoped best_schedule_predictions snapshot.',
+  request: {
+    body: {
+      content: {
+        'multipart/form-data': {
+          schema: z.object({
+            profile: z
+              .string()
+              .optional()
+              .openapi({
+                description:
+                  `Hardware profile for the results (CPU model). Defaults to ${DEFAULT_PROFILE}.`,
+                example: DEFAULT_PROFILE,
+              }),
+            file: z.any().openapi({
+              type: 'string',
+              format: 'binary',
+              description: 'JSON file containing predicted best-schedule knobs.',
+            }),
+            dedupe: z
+              .string()
+              .optional()
+              .openapi({
+                description:
+                  'When set, skip rows that already exist in storage (values: 1/true/yes/on).',
+                example: '1',
+              }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Ingestion result',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(true),
+            inserted: z.number(),
+            duplicates: z.number(),
+            rejected: z.number(),
+            errors: z.array(
+              z.object({
+                index: z.number(),
+                error: z.string(),
+              })
+            ),
+          }),
+        },
+      },
+    },
+    400: {
+      description: 'Bad request',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(false),
+            error: z.string(),
+          }),
+        },
+      },
+    },
+    415: {
+      description: 'Unsupported content type',
+      content: {
+        'application/json': {
+          schema: z.object({
+            ok: z.literal(false),
+            error: z.string(),
+          }),
+        },
+      },
+    },
+  },
+})
+
+uploadRouter.openapi(uploadBestSchedulePredictionsRoute, async (c) => {
+  const contentType = c.req.header('content-type') ?? ''
+  if (!contentType.includes('multipart/form-data')) {
+    return c.json({ ok: false, error: 'Unsupported content type' }, 415)
+  }
+
+  const body = await c.req.parseBody()
+  const profile = typeof body.profile === 'string' ? body.profile : DEFAULT_PROFILE
+  const file = body.file instanceof File ? body.file : undefined
+  const dedupe = parseBool(body.dedupe)
+
+  if (!file) {
+    return c.json({ ok: false, error: 'Missing file field' }, 400)
+  }
+  const normalizedProfile = normalizeProfile(profile)
+  if (!normalizedProfile) {
+    return c.json({ ok: false, error: 'Invalid profile' }, 400)
+  }
+
+  touchActivity('upload best_schedule_predictions request')
+
+  const fullText = await file.text()
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(fullText)
+  } catch {
+    return c.json({ ok: false, error: 'Invalid JSON array' }, 400)
+  }
+
+  if (!Array.isArray(parsed)) {
+    return c.json({ ok: false, error: 'Expected a JSON array' }, 400)
+  }
+
+  const rows: BestSchedulePredictionInsertRow[] = []
+  const errors: Array<{ index: number; error: string }> = []
+
+  for (let i = 0; i < parsed.length; i++) {
+    const entry = parsed[i]
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      errors.push({ index: i, error: 'Array element is not an object' })
+      continue
+    }
+
+    parseBestSchedulePredictionEntry(
+      entry as Record<string, unknown>,
+      i,
+      rows,
+      errors,
+    )
+  }
+
+  if (rows.length === 0) {
+    return c.json(
+      { ok: true, inserted: 0, duplicates: 0, rejected: errors.length, errors },
+      200,
+    )
+  }
+
+  const { tableName } = await ensureBestSchedulePredictionsProfileTable(normalizedProfile)
+  const result = await insertBestSchedulePredictionRows(tableName, rows, dedupe)
+
+  return c.json(
+    {
+      ok: true,
+      inserted: result.inserted,
+      duplicates: result.duplicates,
+      rejected: errors.length,
+      errors,
+    },
+    200,
   )
 })
 
@@ -1029,6 +1199,49 @@ function parseBestScheduleEntry(
   })
 }
 
+function parseBestSchedulePredictionEntry(
+  entry: Record<string, unknown>,
+  index: number,
+  rows: BestSchedulePredictionInsertRow[],
+  errors: Array<{ index: number; error: string }>,
+) {
+  const kernel = typeof entry.kernel === 'string' ? entry.kernel.trim() : ''
+  const m = finiteInteger(entry.M ?? entry.m)
+  const k = finiteInteger(entry.K ?? entry.k)
+  const n = finiteInteger(entry.N ?? entry.n)
+  const vectorWidth = finiteInteger(entry.vector_width ?? entry.vectorWidth)
+  const unrollFactor = finiteInteger(entry.unroll_factor ?? entry.unrollFactor)
+  const cacheWriteUsed = parseBinaryFlag(entry.cache_write_used ?? entry.cacheWriteUsed)
+  const reductionDecomposeUsed = parseBinaryFlag(
+    entry.reduction_decompose_used ?? entry.reductionDecomposeUsed,
+  )
+
+  if (!kernel || m == null || k == null || n == null) {
+    errors.push({ index, error: 'Missing required shape fields' })
+    return
+  }
+  if (vectorWidth == null || unrollFactor == null) {
+    errors.push({ index, error: 'Missing vector_width or unroll_factor' })
+    return
+  }
+  if (cacheWriteUsed == null || reductionDecomposeUsed == null) {
+    errors.push({ index, error: 'Invalid cache_write_used or reduction_decompose_used' })
+    return
+  }
+
+  rows.push({
+    kernel,
+    m,
+    k,
+    n,
+    vectorWidth,
+    unrollFactor,
+    cacheWriteUsed,
+    reductionDecomposeUsed,
+    payloadJson: canonicalJson(entry),
+  })
+}
+
 function parseBestPrunedConfigPayload(
   entry: Record<string, unknown>,
   index: number,
@@ -1380,6 +1593,20 @@ function toOptionalBoolean(value: unknown): boolean | null {
   return null
 }
 
+function parseBinaryFlag(value: unknown): number | null {
+  const boolValue = toOptionalBoolean(value)
+  if (boolValue != null) {
+    return boolValue ? 1 : 0
+  }
+
+  const intValue = finiteInteger(value)
+  if (intValue === 0 || intValue === 1) {
+    return intValue
+  }
+
+  return null
+}
+
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -1637,6 +1864,102 @@ async function ensureBestSchedulesProfileTable(profile: string): Promise<{ table
       trace,
       decisions
     )
+  `)
+
+  return { tableName, tableKey: key }
+}
+
+async function ensureBestSchedulePredictionsProfileTable(
+  profile: string,
+): Promise<{ tableName: string; tableKey: string }> {
+  const tableName = profileTableNameForSuffix(profile, BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX)
+  const key = tableKey(profile)
+
+  const legacyProfileName = legacyProfileTableNameForSuffix(
+    profile,
+    BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX,
+  )
+  if (legacyProfileName !== tableName) {
+    const legacyProfileExists = await tableExists(legacyProfileName)
+    const targetExists = await tableExists(tableName)
+    if (legacyProfileExists && !targetExists) {
+      await execute(
+        sql`alter table ${sql.identifier(legacyProfileName)} rename to ${sql.identifier(tableName)}`
+      )
+    }
+  }
+
+  if (profile === DEFAULT_PROFILE.toLowerCase()) {
+    const legacyExists = await tableExists(BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX)
+    const targetExists = await tableExists(tableName)
+    if (legacyExists && !targetExists) {
+      await execute(
+        sql`alter table ${sql.identifier(BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX)} rename to ${sql.identifier(tableName)}`
+      )
+    }
+  }
+
+  await execute(sql`create extension if not exists pgcrypto`)
+  await execute(sql`
+    create table if not exists ${sql.identifier(tableName)} (
+      id uuid primary key default gen_random_uuid(),
+      ingested_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      kernel text not null,
+      m integer not null,
+      k integer not null,
+      n integer not null,
+      vector_width integer not null,
+      unroll_factor integer not null,
+      cache_write_used integer not null,
+      reduction_decompose_used integer not null,
+      payload jsonb not null default '{}'::jsonb
+    )
+  `)
+
+  await execute(sql`
+    alter table ${sql.identifier(tableName)}
+      add column if not exists updated_at timestamptz default now(),
+      add column if not exists vector_width integer,
+      add column if not exists unroll_factor integer,
+      add column if not exists cache_write_used integer,
+      add column if not exists reduction_decompose_used integer,
+      add column if not exists payload jsonb default '{}'::jsonb
+  `)
+
+  await execute(sql`
+    update ${sql.identifier(tableName)}
+    set cache_write_used = coalesce(cache_write_used, 0),
+        reduction_decompose_used = coalesce(reduction_decompose_used, 0),
+        payload = coalesce(payload, '{}'::jsonb),
+        updated_at = coalesce(updated_at, now())
+    where cache_write_used is null
+      or reduction_decompose_used is null
+      or payload is null
+      or updated_at is null
+  `)
+
+  const indexKey = `${key}_${BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX}`
+  const idxShape = clampIdentifier(`idx_${indexKey}_shape`)
+  const idxKernel = clampIdentifier(`idx_${indexKey}_kernel`)
+  const idxKnobs = clampIdentifier(`idx_${indexKey}_knobs`)
+  const uniqShape = clampIdentifier(`uniq_${indexKey}_shape`)
+
+  await execute(sql`
+    create index if not exists ${sql.identifier(idxShape)}
+    on ${sql.identifier(tableName)} (kernel, m, k, n)
+  `)
+  await execute(sql`
+    create index if not exists ${sql.identifier(idxKernel)}
+    on ${sql.identifier(tableName)} (kernel)
+  `)
+  await execute(sql`
+    create index if not exists ${sql.identifier(idxKnobs)}
+    on ${sql.identifier(tableName)} (vector_width, unroll_factor)
+  `)
+  await execute(sql`
+    create unique index if not exists ${sql.identifier(uniqShape)}
+    on ${sql.identifier(tableName)} (kernel, m, k, n)
   `)
 
   return { tableName, tableKey: key }
@@ -2191,6 +2514,72 @@ async function insertBestScheduleRows(
 
   const inserted = Array.isArray((result as any).rows) ? (result as any).rows.length : 0
   return { inserted, duplicates: rows.length - inserted }
+}
+
+async function insertBestSchedulePredictionRows(
+  tableName: string,
+  rows: BestSchedulePredictionInsertRow[],
+  dedupe: boolean,
+): Promise<{ inserted: number; duplicates: number }> {
+  if (rows.length === 0) return { inserted: 0, duplicates: 0 }
+
+  const columnNames = [
+    'kernel',
+    'm',
+    'k',
+    'n',
+    'vector_width',
+    'unroll_factor',
+    'cache_write_used',
+    'reduction_decompose_used',
+    'payload',
+  ]
+
+  const columnsSql = sql.join(columnNames.map((name) => sql.identifier(name)), sql`, `)
+  const valuesSql = sql.join(
+    rows.map(
+      (row) =>
+        sql`(
+          ${row.kernel},
+          ${row.m},
+          ${row.k},
+          ${row.n},
+          ${row.vectorWidth},
+          ${row.unrollFactor},
+          ${row.cacheWriteUsed},
+          ${row.reductionDecomposeUsed},
+          ${row.payloadJson}::jsonb
+        )`
+    ),
+    sql`, `
+  )
+
+  await execute(sql`
+    insert into ${sql.identifier(tableName)} (${columnsSql})
+    values ${valuesSql}
+    on conflict (kernel, m, k, n) do update set
+      vector_width = excluded.vector_width,
+      unroll_factor = excluded.unroll_factor,
+      cache_write_used = excluded.cache_write_used,
+      reduction_decompose_used = excluded.reduction_decompose_used,
+      payload = excluded.payload,
+      updated_at = now()
+  `)
+
+  const keepShapeTuples = sql.join(
+    rows.map((row) => sql`(${row.kernel}, ${row.m}, ${row.k}, ${row.n})`),
+    sql`, `,
+  )
+
+  await execute(sql`
+    delete from ${sql.identifier(tableName)}
+    where (kernel, m, k, n) not in (${keepShapeTuples})
+  `)
+
+  if (!dedupe) {
+    return { inserted: rows.length, duplicates: 0 }
+  }
+  return { inserted: rows.length, duplicates: 0 }
 }
 
 async function insertBestPrunedConfigRows(

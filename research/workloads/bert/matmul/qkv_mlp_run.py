@@ -108,8 +108,8 @@ profile = resolve_profile()
 
 if run_all_variants:
     run_plan = [
-        #INTENTIONAL exclude of vec_k and rule_based for bypassing exception case and creating training data for rule-based model
-        (k, v) for k in KERNELS for v in VARIANT_LIST if v != "vec_k" and v != "rule_based" 
+        #INTENTIONAL exclude of vec_k, rule_based and ml_guided for bypassing exception case and creating training data for rule-based model
+        (k, v) for k in KERNELS for v in VARIANT_LIST if v != "vec_k" and v != "rule_based" and v != "ml_guided"
     ]
     print(f"Mode   : {ALL_VARIANTS_TAG}")
     print(f"Kernels: {', '.join(KERNELS)}")
