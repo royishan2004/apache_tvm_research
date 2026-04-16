@@ -7,6 +7,7 @@ export const uploadRouter = new OpenAPIHono();
 const TABLE_SUFFIX = 'bert_matmul_results';
 const BEST_SCHEDULES_TABLE_SUFFIX = 'best_schedules';
 const BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX = 'best_schedule_predictions';
+const BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX = 'best_schedule_transformations';
 const BEST_PRUNED_CONFIG_TABLE_SUFFIX = 'best_pruned_config';
 const PRUNING_EXPERIMENTS_TABLE_SUFFIX = 'pruning_experiments';
 const COMPARISON_RESULTS_TABLE_SUFFIX = 'comp_summary';
@@ -15,8 +16,30 @@ const LEGACY_DEFAULT_PROFILE = 'i5-1235U';
 const DEFAULT_PROFILE = detectDefaultProfile();
 const PROFILE_PATTERN = /^[A-Za-z0-9 _-]+$/;
 const TABLE_NAME_MAX = 63;
-const MAX_TABLE_SUFFIX_LEN = Math.max(TABLE_SUFFIX.length, BEST_SCHEDULES_TABLE_SUFFIX.length, BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX.length, BEST_PRUNED_CONFIG_TABLE_SUFFIX.length, PRUNING_EXPERIMENTS_TABLE_SUFFIX.length, COMPARISON_RESULTS_TABLE_SUFFIX.length);
+const MAX_TABLE_SUFFIX_LEN = Math.max(TABLE_SUFFIX.length, BEST_SCHEDULES_TABLE_SUFFIX.length, BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX.length, BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX.length, BEST_PRUNED_CONFIG_TABLE_SUFFIX.length, PRUNING_EXPERIMENTS_TABLE_SUFFIX.length, COMPARISON_RESULTS_TABLE_SUFFIX.length);
 const PROFILE_MAX_LEN = Math.max(1, TABLE_NAME_MAX - (MAX_TABLE_SUFFIX_LEN + 1));
+const BEST_SCHEDULE_TRANSFORMATION_WIDE_COLUMNS = [
+    'annotate.meta_schedule.parallel',
+    'annotate.meta_schedule.tiling_structure',
+    'annotate.meta_schedule.unroll_explicit',
+    'annotate.meta_schedule.vectorize',
+    'annotate.pragma_auto_unroll_max_step',
+    'annotate.pragma_unroll_explicit',
+    'cache_write.storage_scope',
+    'decompose_reduction.loop',
+    'fuse.loops',
+    'parallel.loop',
+    'reverse_compute_at.index',
+    'sample_categorical.candidates',
+    'sample_categorical.decision',
+    'sample_perfect_tile.l2',
+    'sample_perfect_tile.l3',
+    'sample_perfect_tile.l4',
+    'split.l2.factors',
+    'split.l3.factors',
+    'split.l4.factors',
+    'vectorize.loop',
+];
 function detectDefaultProfile() {
     const envProfile = process.env.DEFAULT_PROFILE?.trim();
     if (envProfile) {
@@ -427,6 +450,134 @@ uploadRouter.openapi(uploadBestSchedulePredictionsRoute, async (c) => {
     }
     const { tableName } = await ensureBestSchedulePredictionsProfileTable(normalizedProfile);
     const result = await insertBestSchedulePredictionRows(tableName, rows, dedupe);
+    return c.json({
+        ok: true,
+        inserted: result.inserted,
+        duplicates: result.duplicates,
+        rejected: errors.length,
+        errors,
+    }, 200);
+});
+const uploadBestScheduleTransformationsRoute = createRoute({
+    method: 'post',
+    path: '/api/upload/best_schedule_transformations',
+    tags: ['ingestion'],
+    summary: 'Upload MetaSchedule best schedule transformations',
+    description: 'Accepts best_schedule_transformations.json and refreshes a profile-scoped best_schedule_transformations snapshot.',
+    request: {
+        body: {
+            content: {
+                'multipart/form-data': {
+                    schema: z.object({
+                        profile: z
+                            .string()
+                            .optional()
+                            .openapi({
+                            description: `Hardware profile for the results (CPU model). Defaults to ${DEFAULT_PROFILE}.`,
+                            example: DEFAULT_PROFILE,
+                        }),
+                        file: z.any().openapi({
+                            type: 'string',
+                            format: 'binary',
+                            description: 'JSON file containing parsed best schedule transformations.',
+                        }),
+                        dedupe: z
+                            .string()
+                            .optional()
+                            .openapi({
+                            description: 'When set, skip rows that already exist in storage (values: 1/true/yes/on).',
+                            example: '1',
+                        }),
+                    }),
+                },
+            },
+        },
+    },
+    responses: {
+        200: {
+            description: 'Ingestion result',
+            content: {
+                'application/json': {
+                    schema: z.object({
+                        ok: z.literal(true),
+                        inserted: z.number(),
+                        duplicates: z.number(),
+                        rejected: z.number(),
+                        errors: z.array(z.object({
+                            index: z.number(),
+                            error: z.string(),
+                        })),
+                    }),
+                },
+            },
+        },
+        400: {
+            description: 'Bad request',
+            content: {
+                'application/json': {
+                    schema: z.object({
+                        ok: z.literal(false),
+                        error: z.string(),
+                    }),
+                },
+            },
+        },
+        415: {
+            description: 'Unsupported content type',
+            content: {
+                'application/json': {
+                    schema: z.object({
+                        ok: z.literal(false),
+                        error: z.string(),
+                    }),
+                },
+            },
+        },
+    },
+});
+uploadRouter.openapi(uploadBestScheduleTransformationsRoute, async (c) => {
+    const contentType = c.req.header('content-type') ?? '';
+    if (!contentType.includes('multipart/form-data')) {
+        return c.json({ ok: false, error: 'Unsupported content type' }, 415);
+    }
+    const body = await c.req.parseBody();
+    const profile = typeof body.profile === 'string' ? body.profile : DEFAULT_PROFILE;
+    const file = body.file instanceof File ? body.file : undefined;
+    const dedupe = parseBool(body.dedupe);
+    if (!file) {
+        return c.json({ ok: false, error: 'Missing file field' }, 400);
+    }
+    const normalizedProfile = normalizeProfile(profile);
+    if (!normalizedProfile) {
+        return c.json({ ok: false, error: 'Invalid profile' }, 400);
+    }
+    touchActivity('upload best_schedule_transformations request');
+    const fullText = await file.text();
+    let parsed;
+    try {
+        parsed = JSON.parse(fullText);
+    }
+    catch {
+        return c.json({ ok: false, error: 'Invalid JSON array' }, 400);
+    }
+    if (!Array.isArray(parsed)) {
+        return c.json({ ok: false, error: 'Expected a JSON array' }, 400);
+    }
+    const rows = [];
+    const errors = [];
+    for (let i = 0; i < parsed.length; i++) {
+        const entry = parsed[i];
+        if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+            errors.push({ index: i, error: 'Array element is not an object' });
+            continue;
+        }
+        parseBestScheduleTransformationEntry(entry, i, rows, errors);
+    }
+    if (rows.length === 0) {
+        return c.json({ ok: true, inserted: 0, duplicates: 0, rejected: errors.length, errors }, 200);
+    }
+    const { tableName } = await ensureBestScheduleTransformationsProfileTable(normalizedProfile);
+    const result = await insertBestScheduleTransformationRows(tableName, rows, dedupe);
     return c.json({
         ok: true,
         inserted: result.inserted,
@@ -956,6 +1107,31 @@ function parseBestSchedulePredictionEntry(entry, index, rows, errors) {
         payloadJson: canonicalJson(entry),
     });
 }
+function parseBestScheduleTransformationEntry(entry, index, rows, errors) {
+    const kernel = typeof entry.kernel === 'string' ? entry.kernel.trim() : '';
+    const m = finiteInteger(entry.M ?? entry.m);
+    const k = finiteInteger(entry.K ?? entry.k);
+    const n = finiteInteger(entry.N ?? entry.n);
+    if (!kernel || m == null || k == null || n == null) {
+        errors.push({ index, error: 'Missing required shape fields' });
+        return;
+    }
+    const profile = typeof entry.profile === 'string' && entry.profile.trim()
+        ? entry.profile.trim().toLowerCase()
+        : 'unknown';
+    const values = {};
+    for (const column of BEST_SCHEDULE_TRANSFORMATION_WIDE_COLUMNS) {
+        values[column] = toWideTableCell(entry[column]);
+    }
+    rows.push({
+        profile,
+        kernel,
+        m,
+        k,
+        n,
+        values,
+    });
+}
 function parseBestPrunedConfigPayload(entry, index, rows, errors) {
     const ts = parseTimestamp(entry.timestamp ?? entry.ts);
     if (!ts) {
@@ -1249,6 +1425,16 @@ function isObjectRecord(value) {
 function canonicalJson(value) {
     const canonicalized = canonicalizeJsonValue(value);
     return JSON.stringify(canonicalized) ?? 'null';
+}
+function toWideTableCell(value) {
+    if (value == null)
+        return '';
+    if (typeof value === 'string')
+        return value;
+    if (typeof value === 'number' || typeof value === 'boolean') {
+        return String(value);
+    }
+    return canonicalJson(value);
 }
 function canonicalizeJsonValue(value) {
     if (Array.isArray(value)) {
@@ -1545,6 +1731,165 @@ async function ensureBestSchedulePredictionsProfileTable(profile) {
     await execute(sql `
     create unique index if not exists ${sql.identifier(uniqShape)}
     on ${sql.identifier(tableName)} (kernel, m, k, n)
+  `);
+    return { tableName, tableKey: key };
+}
+async function ensureBestScheduleTransformationsProfileTable(profile) {
+    const tableName = profileTableNameForSuffix(profile, BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX);
+    const key = tableKey(profile);
+    const legacyProfileName = legacyProfileTableNameForSuffix(profile, BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX);
+    if (legacyProfileName !== tableName) {
+        const legacyProfileExists = await tableExists(legacyProfileName);
+        const targetExists = await tableExists(tableName);
+        if (legacyProfileExists && !targetExists) {
+            await execute(sql `alter table ${sql.identifier(legacyProfileName)} rename to ${sql.identifier(tableName)}`);
+        }
+    }
+    if (profile === DEFAULT_PROFILE.toLowerCase()) {
+        const legacyExists = await tableExists(BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX);
+        const targetExists = await tableExists(tableName);
+        if (legacyExists && !targetExists) {
+            await execute(sql `alter table ${sql.identifier(BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX)} rename to ${sql.identifier(tableName)}`);
+        }
+    }
+    await execute(sql `create extension if not exists pgcrypto`);
+    const wideColumnDefinitions = sql.join(BEST_SCHEDULE_TRANSFORMATION_WIDE_COLUMNS.map((column) => sql `${sql.identifier(column)} text not null default ''`), sql `, `);
+    await execute(sql `
+    create table if not exists ${sql.identifier(tableName)} (
+      id uuid primary key default gen_random_uuid(),
+      ingested_at timestamptz not null default now(),
+      updated_at timestamptz not null default now(),
+      profile text not null default 'unknown',
+      kernel text not null,
+      ${sql.identifier('M')} integer not null,
+      ${sql.identifier('K')} integer not null,
+      ${sql.identifier('N')} integer not null,
+      ${wideColumnDefinitions}
+    )
+  `);
+    await execute(sql `
+    alter table ${sql.identifier(tableName)}
+      add column if not exists updated_at timestamptz default now(),
+      add column if not exists profile text default 'unknown',
+      add column if not exists ${sql.identifier('M')} integer,
+      add column if not exists ${sql.identifier('K')} integer,
+      add column if not exists ${sql.identifier('N')} integer,
+      add column if not exists source_profile text default '',
+      add column if not exists transformation_count integer default 0,
+      add column if not exists transformations jsonb default '{}'::jsonb,
+      add column if not exists row_payload jsonb default '{}'::jsonb,
+      add column if not exists m integer,
+      add column if not exists k integer,
+      add column if not exists n integer
+  `);
+    for (const column of BEST_SCHEDULE_TRANSFORMATION_WIDE_COLUMNS) {
+        await execute(sql `
+      alter table ${sql.identifier(tableName)}
+        add column if not exists ${sql.identifier(column)} text default ''
+    `);
+    }
+    const migrationAssignments = sql.join(BEST_SCHEDULE_TRANSFORMATION_WIDE_COLUMNS.map((column) => sql `
+        ${sql.identifier(column)} = coalesce(
+          nullif(${sql.identifier(column)}, ''),
+          nullif(row_payload ->> ${column}, ''),
+          nullif(transformations ->> ${column}, ''),
+          ''
+        )
+      `), sql `, `);
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set profile = coalesce(
+          nullif(profile, ''),
+          nullif(source_profile, ''),
+          nullif(row_payload ->> 'profile', ''),
+          'unknown'
+        ),
+        ${sql.identifier('M')} = coalesce(
+          ${sql.identifier('M')},
+          m,
+          nullif(row_payload ->> 'M', '')::integer,
+          nullif(row_payload ->> 'm', '')::integer
+        ),
+        ${sql.identifier('K')} = coalesce(
+          ${sql.identifier('K')},
+          k,
+          nullif(row_payload ->> 'K', '')::integer,
+          nullif(row_payload ->> 'k', '')::integer
+        ),
+        ${sql.identifier('N')} = coalesce(
+          ${sql.identifier('N')},
+          n,
+          nullif(row_payload ->> 'N', '')::integer,
+          nullif(row_payload ->> 'n', '')::integer
+        ),
+        ${migrationAssignments},
+        updated_at = coalesce(updated_at, now())
+  `);
+    await execute(sql `
+    delete from ${sql.identifier(tableName)}
+    where kernel is null
+      or kernel = ''
+      or ${sql.identifier('M')} is null
+      or ${sql.identifier('K')} is null
+      or ${sql.identifier('N')} is null
+  `);
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set profile = 'unknown'
+    where profile is null or profile = ''
+  `);
+    await execute(sql `
+    update ${sql.identifier(tableName)}
+    set updated_at = now()
+    where updated_at is null
+  `);
+    await execute(sql `
+    alter table ${sql.identifier(tableName)}
+      alter column updated_at set default now(),
+      alter column updated_at set not null,
+      alter column profile set default 'unknown',
+      alter column profile set not null,
+      alter column kernel set not null,
+      alter column ${sql.identifier('M')} set not null,
+      alter column ${sql.identifier('K')} set not null,
+      alter column ${sql.identifier('N')} set not null
+  `);
+    for (const column of BEST_SCHEDULE_TRANSFORMATION_WIDE_COLUMNS) {
+        await execute(sql `
+      update ${sql.identifier(tableName)}
+      set ${sql.identifier(column)} = ''
+      where ${sql.identifier(column)} is null
+    `);
+        await execute(sql `
+      alter table ${sql.identifier(tableName)}
+        alter column ${sql.identifier(column)} set default '',
+        alter column ${sql.identifier(column)} set not null
+    `);
+    }
+    await execute(sql `
+    alter table ${sql.identifier(tableName)}
+      drop column if exists source_profile,
+      drop column if exists transformation_count,
+      drop column if exists transformations,
+      drop column if exists row_payload,
+      drop column if exists m,
+      drop column if exists k,
+      drop column if exists n
+  `);
+    const indexKey = `${key}_${BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX}`;
+    const idxShape = clampIdentifier(`idx_${indexKey}_shape`);
+    const idxProfileKernel = clampIdentifier(`idx_${indexKey}_profile_kernel`);
+    const uniqShape = clampIdentifier(`uniq_${indexKey}_shape`);
+    const legacyUniqShape = clampIdentifier('uniq_best_schedule_transformations_shape');
+    await execute(sql `drop index if exists ${sql.identifier(uniqShape)}`);
+    await execute(sql `drop index if exists ${sql.identifier(legacyUniqShape)}`);
+    await execute(sql `
+    create index if not exists ${sql.identifier(idxShape)}
+    on ${sql.identifier(tableName)} (kernel, ${sql.identifier('M')}, ${sql.identifier('K')}, ${sql.identifier('N')})
+  `);
+    await execute(sql `
+    create index if not exists ${sql.identifier(idxProfileKernel)}
+    on ${sql.identifier(tableName)} (profile, kernel)
   `);
     return { tableName, tableKey: key };
 }
@@ -1915,6 +2260,7 @@ async function ensureComparisonResultsProfileTable(profile) {
 async function insertRows(tableName, rows, dedupe) {
     if (rows.length === 0)
         return { inserted: 0, duplicates: 0 };
+    void dedupe;
     const columnNames = [
         'ts',
         'kernel',
@@ -2051,6 +2397,38 @@ async function insertBestSchedulePredictionRows(tableName, rows, dedupe) {
     if (!dedupe) {
         return { inserted: rows.length, duplicates: 0 };
     }
+    return { inserted: rows.length, duplicates: 0 };
+}
+async function insertBestScheduleTransformationRows(tableName, rows, dedupe) {
+    if (rows.length === 0)
+        return { inserted: 0, duplicates: 0 };
+    const columnNames = [
+        'profile',
+        'kernel',
+        'M',
+        'K',
+        'N',
+        ...BEST_SCHEDULE_TRANSFORMATION_WIDE_COLUMNS,
+    ];
+    const columnsSql = sql.join(columnNames.map((name) => sql.identifier(name)), sql `, `);
+    const valuesSql = sql.join(rows.map((row) => {
+        const rowValues = [
+            sql `${row.profile}`,
+            sql `${row.kernel}`,
+            sql `${row.m}`,
+            sql `${row.k}`,
+            sql `${row.n}`,
+            ...BEST_SCHEDULE_TRANSFORMATION_WIDE_COLUMNS.map((column) => sql `${row.values[column]}`),
+        ];
+        return sql `(${sql.join(rowValues, sql `, `)})`;
+    }), sql `, `);
+    // Match terminal --view wide output exactly: replace snapshot with all rows,
+    // including repeated (kernel, M, K, N) combinations.
+    await execute(sql `delete from ${sql.identifier(tableName)}`);
+    await execute(sql `
+    insert into ${sql.identifier(tableName)} (${columnsSql})
+    values ${valuesSql}
+  `);
     return { inserted: rows.length, duplicates: 0 };
 }
 async function insertBestPrunedConfigRows(tableName, rows, dedupe) {

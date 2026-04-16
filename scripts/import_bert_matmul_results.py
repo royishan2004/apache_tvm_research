@@ -15,6 +15,9 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BERT_RESULTS = ROOT / "research" / "results" / "bert_matmul_results.json"
 DEFAULT_BEST_SCHEDULES = ROOT / "research" / "results" / "metaschedule" / "best_schedules.json"
+DEFAULT_BEST_SCHEDULE_TRANSFORMATIONS = (
+    ROOT / "research" / "results" / "metaschedule" / "best_schedule_transformations.json"
+)
 DEFAULT_BEST_SCHEDULE_PREDICTIONS = (
     ROOT / "research" / "results" / "ml_schedule_predictor" / "predicted_knobs_all_shapes.json"
 )
@@ -30,6 +33,7 @@ DEFAULT_API_TIMEOUT = 300
 
 DATASET_BERT = "bert-matmul"
 DATASET_BEST = "best-schedules"
+DATASET_BEST_TRANSFORMATIONS = "best-schedule-transformations"
 DATASET_BEST_PREDICTIONS = "best-schedule-predictions"
 DATASET_BEST_PRUNED = "best-pruned-config"
 DATASET_PRUNING = "pruning-experiments"
@@ -37,6 +41,7 @@ DATASET_COMPARISON = "comparison-results"
 DATASET_CHOICES = (
     DATASET_BERT,
     DATASET_BEST,
+    DATASET_BEST_TRANSFORMATIONS,
     DATASET_BEST_PREDICTIONS,
     DATASET_BEST_PRUNED,
     DATASET_PRUNING,
@@ -45,6 +50,7 @@ DATASET_CHOICES = (
 
 BERT_TABLE_SUFFIX = "bert_matmul_results"
 BEST_SCHEDULES_TABLE_SUFFIX = "best_schedules"
+BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX = "best_schedule_transformations"
 BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX = "best_schedule_predictions"
 BEST_PRUNED_CONFIG_TABLE_SUFFIX = "best_pruned_config"
 PRUNING_EXPERIMENTS_TABLE_SUFFIX = "pruning_experiments"
@@ -60,6 +66,7 @@ PROFILE_MAX_LEN = max(
         max(
             len(BERT_TABLE_SUFFIX),
             len(BEST_SCHEDULES_TABLE_SUFFIX),
+            len(BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX),
             len(BEST_SCHEDULE_PREDICTIONS_TABLE_SUFFIX),
             len(BEST_PRUNED_CONFIG_TABLE_SUFFIX),
             len(PRUNING_EXPERIMENTS_TABLE_SUFFIX),
@@ -72,6 +79,7 @@ PROFILE_MAX_LEN = max(
 
 DEFAULT_BERT_API_URL = "http://localhost:3000/api/upload/bert_matmul_results"
 DEFAULT_BEST_SCHEDULES_API_URL = "http://localhost:3000/api/upload/best_schedules"
+DEFAULT_BEST_SCHEDULE_TRANSFORMATIONS_API_URL = "http://localhost:3000/api/upload/best_schedule_transformations"
 DEFAULT_BEST_SCHEDULE_PREDICTIONS_API_URL = "http://localhost:3000/api/upload/best_schedule_predictions"
 DEFAULT_BEST_PRUNED_CONFIG_API_URL = "http://localhost:3000/api/upload/best_pruned_config"
 DEFAULT_PRUNING_EXPERIMENTS_API_URL = "http://localhost:3000/api/upload/pruning_experiments"
@@ -84,6 +92,7 @@ from research.workloads.common.data_aggregator_client import (  # noqa: E402
     resolve_profile as resolve_runtime_profile,
     upload_best_pruned_config,
     upload_best_schedule_predictions,
+    upload_best_schedule_transformations,
     upload_best_schedules,
     upload_comparison_results,
     upload_pruning_experiments,
@@ -91,6 +100,29 @@ from research.workloads.common.data_aggregator_client import (  # noqa: E402
 )
 
 RE_TZ = re.compile(r"[Zz]|[+-]\d{2}(:?\d{2})?$")
+
+BEST_SCHEDULE_TRANSFORMATION_COLUMN_MAP: Tuple[Tuple[str, str], ...] = (
+    ("annotate_meta_schedule_parallel", "annotate.meta_schedule.parallel"),
+    ("annotate_meta_schedule_tiling_structure", "annotate.meta_schedule.tiling_structure"),
+    ("annotate_meta_schedule_unroll_explicit", "annotate.meta_schedule.unroll_explicit"),
+    ("annotate_meta_schedule_vectorize", "annotate.meta_schedule.vectorize"),
+    ("annotate_pragma_auto_unroll_max_step", "annotate.pragma_auto_unroll_max_step"),
+    ("annotate_pragma_unroll_explicit", "annotate.pragma_unroll_explicit"),
+    ("cache_write_storage_scope", "cache_write.storage_scope"),
+    ("decompose_reduction_loop", "decompose_reduction.loop"),
+    ("fuse_loops", "fuse.loops"),
+    ("parallel_loop", "parallel.loop"),
+    ("reverse_compute_at_index", "reverse_compute_at.index"),
+    ("sample_categorical_candidates", "sample_categorical.candidates"),
+    ("sample_categorical_decision", "sample_categorical.decision"),
+    ("sample_perfect_tile_l2", "sample_perfect_tile.l2"),
+    ("sample_perfect_tile_l3", "sample_perfect_tile.l3"),
+    ("sample_perfect_tile_l4", "sample_perfect_tile.l4"),
+    ("split_l2_factors", "split.l2.factors"),
+    ("split_l3_factors", "split.l3.factors"),
+    ("split_l4_factors", "split.l4.factors"),
+    ("vectorize_loop", "vectorize.loop"),
+)
 
 
 def load_env_file(path: Path) -> Dict[str, str]:
@@ -208,6 +240,24 @@ def to_bool(value: Any) -> Optional[bool]:
     return None
 
 
+def sanitize_json_value(value: Any) -> Any:
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return value
+
+    if isinstance(value, dict):
+        return {key: sanitize_json_value(raw) for key, raw in value.items()}
+
+    if isinstance(value, list):
+        return [sanitize_json_value(item) for item in value]
+
+    if isinstance(value, tuple):
+        return [sanitize_json_value(item) for item in value]
+
+    return value
+
+
 def to_binary_int(value: Any) -> Optional[int]:
     bool_value = to_bool(value)
     if bool_value is not None:
@@ -269,9 +319,29 @@ def normalize_bert_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]
 
 def canonical_json(value: Any) -> Optional[str]:
     try:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+        safe_value = sanitize_json_value(value)
+        return json.dumps(
+            safe_value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
     except (TypeError, ValueError):
         return None
+
+
+def to_wide_cell_string(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    canonical = canonical_json(value)
+    if canonical is None:
+        return str(value)
+    return canonical
 
 
 def normalize_best_schedule_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -313,6 +383,53 @@ def normalize_best_schedule_entry(entry: Dict[str, Any]) -> Tuple[Optional[Dict[
         "trace": trace,
         "decisions": decisions,
         "decisions_json": decisions_json,
+    }, None
+
+
+def normalize_best_schedule_transformation_entry(
+    entry: Dict[str, Any],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    profile_raw = entry.get("profile")
+    profile = profile_raw.strip().lower() if isinstance(profile_raw, str) else "unknown"
+    if not profile:
+        profile = "unknown"
+
+    kernel_raw = entry.get("kernel")
+    kernel = kernel_raw.strip() if isinstance(kernel_raw, str) else ""
+
+    m = to_int(entry.get("M", entry.get("m")))
+    k = to_int(entry.get("K", entry.get("k")))
+    n = to_int(entry.get("N", entry.get("n")))
+
+    if not kernel:
+        return None, "Missing kernel"
+    if m is None or k is None or n is None:
+        return None, "Missing shape"
+
+    normalized: Dict[str, Any] = {
+        "profile": profile,
+        "kernel": kernel,
+        "m": m,
+        "k": k,
+        "n": n,
+    }
+
+    payload: Dict[str, Any] = {
+        "profile": profile,
+        "kernel": kernel,
+        "M": m,
+        "K": k,
+        "N": n,
+    }
+
+    for field_name, column_name in BEST_SCHEDULE_TRANSFORMATION_COLUMN_MAP:
+        wide_value = to_wide_cell_string(entry.get(column_name))
+        normalized[field_name] = wide_value
+        payload[column_name] = wide_value
+
+    return {
+        **normalized,
+        "payload": payload,
     }, None
 
 
@@ -785,6 +902,15 @@ def load_entries(path: Path, dataset: str) -> Tuple[List[Dict[str, Any]], List[s
                 normalized["trace"],
                 normalized["decisions_json"],
             )
+        elif dataset == DATASET_BEST_TRANSFORMATIONS:
+            normalized, error = normalize_best_schedule_transformation_entry(entry)
+            if error:
+                errors.append(f"Entry {idx}: {error}")
+                continue
+            key = (
+                "row",
+                idx,
+            )
         elif dataset == DATASET_BEST_PREDICTIONS:
             normalized, error = normalize_best_schedule_prediction_entry(entry)
             if error:
@@ -909,6 +1035,33 @@ def run_api_import(
         print(f"Uploaded {total} rows via data_aggregator API.")
         return 0
 
+    if dataset == DATASET_BEST_TRANSFORMATIONS:
+        default_url = DEFAULT_BEST_SCHEDULE_TRANSFORMATIONS_API_URL
+        env_url = "DATA_AGGREGATOR_BEST_SCHEDULE_TRANSFORMATIONS_URL"
+
+        # Snapshot semantics: send all rows together so stale-row cleanup is correct.
+        payload_rows = [
+            row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            for row in rows
+        ]
+        ok = upload_best_schedule_transformations(
+            payload_rows,
+            url=api_url,
+            profile=profile,
+            dedupe=dedupe,
+            timeout=timeout,
+        )
+        if not ok:
+            effective_url = api_url or os.environ.get(env_url, default_url)
+            print(
+                "Upload failed. "
+                f"Check {env_url} ({effective_url}) and that the server is running."
+            )
+            return 1
+
+        print(f"Uploaded {len(rows)} rows via data_aggregator API.")
+        return 0
+
     if dataset == DATASET_BEST_PREDICTIONS:
         default_url = DEFAULT_BEST_SCHEDULE_PREDICTIONS_API_URL
         env_url = "DATA_AGGREGATOR_BEST_SCHEDULE_PREDICTIONS_URL"
@@ -1021,6 +1174,10 @@ def run_api_import(
 
 def qident(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
+
+
+def qlit(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def table_exists(cur: Any, table_name: str) -> bool:
@@ -1347,6 +1504,184 @@ def ensure_direct_table(cur: Any, dataset: str, profile: str, table_name: str) -
                 decisions
             )
             """
+        )
+        return
+
+    if dataset == DATASET_BEST_TRANSFORMATIONS:
+        suffix = BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX
+        rename_legacy_tables(cur, profile, suffix, table_name)
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
+
+        wide_columns_sql = ",\n                ".join(
+            f"{qident(column_name)} text not null default ''"
+            for _, column_name in BEST_SCHEDULE_TRANSFORMATION_COLUMN_MAP
+        )
+
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {qident(table_name)} (
+                id uuid primary key default gen_random_uuid(),
+                ingested_at timestamptz not null default now(),
+                updated_at timestamptz not null default now(),
+                profile text not null default 'unknown',
+                kernel text not null,
+                {qident('M')} integer not null,
+                {qident('K')} integer not null,
+                {qident('N')} integer not null,
+                {wide_columns_sql}
+            )
+            """
+        )
+
+        cur.execute(
+            f"""
+            ALTER TABLE {qident(table_name)}
+                ADD COLUMN IF NOT EXISTS updated_at timestamptz default now(),
+                ADD COLUMN IF NOT EXISTS profile text default 'unknown',
+                ADD COLUMN IF NOT EXISTS {qident('M')} integer,
+                ADD COLUMN IF NOT EXISTS {qident('K')} integer,
+                ADD COLUMN IF NOT EXISTS {qident('N')} integer,
+                ADD COLUMN IF NOT EXISTS source_profile text default '',
+                ADD COLUMN IF NOT EXISTS transformation_count integer default 0,
+                ADD COLUMN IF NOT EXISTS transformations jsonb default '{{}}'::jsonb,
+                ADD COLUMN IF NOT EXISTS row_payload jsonb default '{{}}'::jsonb,
+                ADD COLUMN IF NOT EXISTS m integer,
+                ADD COLUMN IF NOT EXISTS k integer,
+                ADD COLUMN IF NOT EXISTS n integer
+            """
+        )
+
+        for _, column_name in BEST_SCHEDULE_TRANSFORMATION_COLUMN_MAP:
+            cur.execute(
+                f"ALTER TABLE {qident(table_name)} "
+                f"ADD COLUMN IF NOT EXISTS {qident(column_name)} text DEFAULT ''"
+            )
+
+        migration_assignments = ",\n                ".join(
+            (
+                f"{qident(column_name)} = COALESCE("
+                f"NULLIF({qident(column_name)}, ''), "
+                f"NULLIF(row_payload ->> {qlit(column_name)}, ''), "
+                f"NULLIF(transformations ->> {qlit(column_name)}, ''), "
+                f"''"
+                f")"
+            )
+            for _, column_name in BEST_SCHEDULE_TRANSFORMATION_COLUMN_MAP
+        )
+
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET profile = COALESCE(
+                    NULLIF(profile, ''),
+                    NULLIF(source_profile, ''),
+                    NULLIF(row_payload ->> 'profile', ''),
+                    'unknown'
+                ),
+                {qident('M')} = COALESCE(
+                    {qident('M')},
+                    m,
+                    NULLIF(row_payload ->> 'M', '')::integer,
+                    NULLIF(row_payload ->> 'm', '')::integer
+                ),
+                {qident('K')} = COALESCE(
+                    {qident('K')},
+                    k,
+                    NULLIF(row_payload ->> 'K', '')::integer,
+                    NULLIF(row_payload ->> 'k', '')::integer
+                ),
+                {qident('N')} = COALESCE(
+                    {qident('N')},
+                    n,
+                    NULLIF(row_payload ->> 'N', '')::integer,
+                    NULLIF(row_payload ->> 'n', '')::integer
+                ),
+                {migration_assignments},
+                updated_at = COALESCE(updated_at, now())
+            """
+        )
+
+        cur.execute(
+            f"""
+            DELETE FROM {qident(table_name)}
+            WHERE kernel IS NULL
+                OR kernel = ''
+                OR {qident('M')} IS NULL
+                OR {qident('K')} IS NULL
+                OR {qident('N')} IS NULL
+            """
+        )
+
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET profile = 'unknown'
+            WHERE profile IS NULL OR profile = ''
+            """
+        )
+
+        cur.execute(
+            f"""
+            UPDATE {qident(table_name)}
+            SET updated_at = now()
+            WHERE updated_at IS NULL
+            """
+        )
+
+        cur.execute(
+            f"""
+            ALTER TABLE {qident(table_name)}
+                ALTER COLUMN updated_at SET DEFAULT now(),
+                ALTER COLUMN updated_at SET NOT NULL,
+                ALTER COLUMN profile SET DEFAULT 'unknown',
+                ALTER COLUMN profile SET NOT NULL,
+                ALTER COLUMN kernel SET NOT NULL,
+                ALTER COLUMN {qident('M')} SET NOT NULL,
+                ALTER COLUMN {qident('K')} SET NOT NULL,
+                ALTER COLUMN {qident('N')} SET NOT NULL
+            """
+        )
+
+        for _, column_name in BEST_SCHEDULE_TRANSFORMATION_COLUMN_MAP:
+            cur.execute(
+                f"UPDATE {qident(table_name)} "
+                f"SET {qident(column_name)} = '' WHERE {qident(column_name)} IS NULL"
+            )
+            cur.execute(
+                f"ALTER TABLE {qident(table_name)} "
+                f"ALTER COLUMN {qident(column_name)} SET DEFAULT '', "
+                f"ALTER COLUMN {qident(column_name)} SET NOT NULL"
+            )
+
+        cur.execute(
+            f"""
+            ALTER TABLE {qident(table_name)}
+                DROP COLUMN IF EXISTS source_profile,
+                DROP COLUMN IF EXISTS transformation_count,
+                DROP COLUMN IF EXISTS transformations,
+                DROP COLUMN IF EXISTS row_payload,
+                DROP COLUMN IF EXISTS m,
+                DROP COLUMN IF EXISTS k,
+                DROP COLUMN IF EXISTS n
+            """
+        )
+
+        index_key = f"{table_key(profile)}_{suffix}"
+        idx_shape = clamp_identifier(f"idx_{index_key}_shape")
+        idx_profile_kernel = clamp_identifier(f"idx_{index_key}_profile_kernel")
+        uniq_shape = clamp_identifier(f"uniq_{index_key}_shape")
+        legacy_uniq_shape = clamp_identifier("uniq_best_schedule_transformations_shape")
+
+        cur.execute(f"DROP INDEX IF EXISTS {qident(uniq_shape)}")
+        cur.execute(f"DROP INDEX IF EXISTS {qident(legacy_uniq_shape)}")
+
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_shape)} "
+            f"ON {qident(table_name)} (kernel, {qident('M')}, {qident('K')}, {qident('N')})"
+        )
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS {qident(idx_profile_kernel)} "
+            f"ON {qident(table_name)} (profile, kernel)"
         )
         return
 
@@ -1786,6 +2121,78 @@ def run_direct_import_best_schedules(
         return 1
 
     print(f"Imported {inserted} rows. Skipped {skipped} duplicates.")
+    return 0
+
+
+def run_direct_import_best_schedule_transformations(
+    rows: List[Dict[str, Any]],
+    db_url: str,
+    table_name: str,
+    profile: str,
+    chunk_size: int,
+    dedupe: bool,
+) -> int:
+    try:
+        import psycopg
+    except ImportError:
+        print("psycopg is required. Install with: pip install psycopg[binary]")
+        return 1
+
+    _ = dedupe  # Snapshot is refreshed atomically for this dataset.
+
+    wide_columns = [column_name for _, column_name in BEST_SCHEDULE_TRANSFORMATION_COLUMN_MAP]
+    insert_columns = ["profile", "kernel", "M", "K", "N", *wide_columns]
+    insert_columns_sql = ",\n            ".join(qident(name) for name in insert_columns)
+    value_placeholders = [
+        "%(profile)s",
+        "%(kernel)s",
+        "%(m)s",
+        "%(k)s",
+        "%(n)s",
+        *[f"%({field_name})s" for field_name, _ in BEST_SCHEDULE_TRANSFORMATION_COLUMN_MAP],
+    ]
+    value_placeholders_sql = ",\n            ".join(value_placeholders)
+    insert_sql = f"""
+        INSERT INTO {qident(table_name)} (
+            {insert_columns_sql}
+        )
+        VALUES (
+            {value_placeholders_sql}
+        )
+    """
+
+    upserted = 0
+    pending: List[Dict[str, Any]] = []
+
+    try:
+        with psycopg.connect(db_url) as conn:
+            with conn.cursor() as cur:
+                ensure_direct_table(cur, DATASET_BEST_TRANSFORMATIONS, profile, table_name)
+                conn.commit()
+
+                # Match terminal --view wide table: replace snapshot with full row set.
+                cur.execute(f"DELETE FROM {qident(table_name)}")
+                conn.commit()
+
+                for row in rows:
+                    pending.append(row)
+                    if len(pending) >= chunk_size:
+                        cur.executemany(insert_sql, pending)
+                        conn.commit()
+                        upserted += len(pending)
+                        pending.clear()
+
+                if pending:
+                    cur.executemany(insert_sql, pending)
+                    conn.commit()
+                    upserted += len(pending)
+    except psycopg.OperationalError as exc:
+        print(f"Connection failed: {exc}")
+        if "sslrootcert" in str(exc) or "certificate" in str(exc):
+            print("Hint: try --sslmode=require (Neon default) or --sslrootcert=system.")
+        return 1
+
+    print(f"Upserted {upserted} rows (best_schedule_transformations snapshot mode).")
     return 0
 
 
@@ -2280,7 +2687,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Import benchmark JSON files into Neon with profile-specific tables. "
-            "Commands: bert-matmul | best-schedules | best-schedule-predictions | "
+            "Commands: bert-matmul | best-schedules | best-schedule-transformations | "
+            "best-schedule-predictions | "
             "best-pruned-config | pruning-experiments | comparison-results"
         )
     )
@@ -2297,6 +2705,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Import research/results/metaschedule/best_schedules.json",
     )
     add_common_args(best_parser, DEFAULT_BEST_SCHEDULES)
+
+    best_transformations_parser = subparsers.add_parser(
+        DATASET_BEST_TRANSFORMATIONS,
+        help="Import research/results/metaschedule/best_schedule_transformations.json",
+    )
+    add_common_args(best_transformations_parser, DEFAULT_BEST_SCHEDULE_TRANSFORMATIONS)
 
     best_predictions_parser = subparsers.add_parser(
         DATASET_BEST_PREDICTIONS,
@@ -2402,6 +2816,17 @@ def main() -> int:
     if dataset == DATASET_BEST:
         table_name = profile_table_name(normalized_profile, BEST_SCHEDULES_TABLE_SUFFIX)
         return run_direct_import_best_schedules(
+            rows,
+            db_url=db_url,
+            table_name=table_name,
+            profile=normalized_profile,
+            chunk_size=args.chunk_size,
+            dedupe=not args.no_dedupe,
+        )
+
+    if dataset == DATASET_BEST_TRANSFORMATIONS:
+        table_name = profile_table_name(normalized_profile, BEST_SCHEDULE_TRANSFORMATIONS_TABLE_SUFFIX)
+        return run_direct_import_best_schedule_transformations(
             rows,
             db_url=db_url,
             table_name=table_name,

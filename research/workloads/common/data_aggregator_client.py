@@ -21,6 +21,7 @@ _CACHED_PROFILE: Optional[str] = None
 DEFAULT_DATA_AGGREGATOR_URL = "http://localhost:3000/api/upload/bert_matmul_results"
 DEFAULT_BEST_SCHEDULES_URL = "http://localhost:3000/api/upload/best_schedules"
 DEFAULT_BEST_SCHEDULE_PREDICTIONS_URL = "http://localhost:3000/api/upload/best_schedule_predictions"
+DEFAULT_BEST_SCHEDULE_TRANSFORMATIONS_URL = "http://localhost:3000/api/upload/best_schedule_transformations"
 DEFAULT_BEST_PRUNED_CONFIG_URL = "http://localhost:3000/api/upload/best_pruned_config"
 DEFAULT_PRUNING_EXPERIMENTS_URL = "http://localhost:3000/api/upload/pruning_experiments"
 DEFAULT_COMPARISON_RESULTS_URL = "http://localhost:3000/api/upload/comparison_results"
@@ -110,6 +111,36 @@ def upload_best_schedule_predictions(
         dedupe=dedupe,
         timeout=timeout,
         payload_filename="predicted_knobs_all_shapes.json",
+    )
+
+
+def upload_best_schedule_transformations(
+    entries: Iterable[Dict[str, Any]],
+    url: Optional[str] = None,
+    profile: Optional[str] = None,
+    dedupe: bool = False,
+    timeout: Optional[int] = None,
+) -> bool:
+    """Upload parsed best schedule transformation rows to the data aggregator.
+
+    Controlled by env vars:
+    - DATA_AGGREGATOR_BEST_SCHEDULE_TRANSFORMATIONS_URL (default: http://localhost:3000/api/upload/best_schedule_transformations)
+    - DATA_AGGREGATOR_PROFILE (default: auto-detected)
+    - DATA_AGGREGATOR_TIMEOUT (seconds, default: 10)
+    - DATA_AGGREGATOR_DISABLE (set to "1" to disable)
+    """
+    if url is None:
+        url = os.environ.get(
+            "DATA_AGGREGATOR_BEST_SCHEDULE_TRANSFORMATIONS_URL",
+            DEFAULT_BEST_SCHEDULE_TRANSFORMATIONS_URL,
+        )
+    return _upload_payload(
+        list(entries),
+        url=url,
+        profile=profile,
+        dedupe=dedupe,
+        timeout=timeout,
+        payload_filename="best_schedule_transformations.json",
     )
 
 
@@ -379,6 +410,7 @@ def _looks_like_data_aggregator_response(probe_url: str, raw_body: str) -> bool:
             and "/api/upload/bert_matmul_results" in paths
             and "/api/upload/best_schedules" in paths
             and "/api/upload/best_schedule_predictions" in paths
+            and "/api/upload/best_schedule_transformations" in paths
             and "/api/upload/best_pruned_config" in paths
             and "/api/upload/pruning_experiments" in paths
             and "/api/upload/comparison_results" in paths

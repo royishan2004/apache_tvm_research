@@ -7,6 +7,7 @@ This script imports benchmark JSON files into profile-specific tables and skips 
 Supported commands:
 - `bert-matmul` -> imports `research/results/bert_matmul_results.json` into `*_bert_matmul_results`
 - `best-schedules` -> imports `research/results/metaschedule/best_schedules.json` into `*_best_schedules`
+- `best-schedule-transformations` -> imports `research/results/metaschedule/best_schedule_transformations.json` into `*_best_schedule_transformations`
 - `best-schedule-predictions` -> imports `research/results/ml_schedule_predictor/predicted_knobs_all_shapes.json` into `*_best_schedule_predictions`
 - `best-pruned-config` -> imports archived `research/archive/metaschedule_8020/results/metaschedule/best_pruned_config.json` into `*_best_pruned_config`
 - `pruning-experiments` -> imports archived `research/archive/metaschedule_8020/results/metaschedule/pruning_experiments.json` into `*_pruning_experiments`
@@ -24,10 +25,12 @@ Supported commands:
 python3 scripts/import_bert_matmul_results.py bert-matmul --dry-run
 python3 scripts/import_bert_matmul_results.py bert-matmul
 python3 scripts/import_bert_matmul_results.py best-schedules
+python3 scripts/import_bert_matmul_results.py best-schedule-transformations
 python3 scripts/import_bert_matmul_results.py best-schedule-predictions
 python3 scripts/import_bert_matmul_results.py best-pruned-config
 python3 scripts/import_bert_matmul_results.py pruning-experiments
 python3 scripts/import_bert_matmul_results.py comparison-results
+python3 scripts/import_bert_matmul_results.py best-schedule-transformations --mode=direct
 python3 scripts/import_bert_matmul_results.py best-schedule-predictions --mode=direct
 python3 scripts/import_bert_matmul_results.py best-schedules --mode=direct
 python3 scripts/import_bert_matmul_results.py pruning-experiments --mode=direct
@@ -59,10 +62,11 @@ python3 scripts/import_bert_matmul_results.py --dry-run
 This defaults to the `bert-matmul` command.
 
 Options:
-- `bert-matmul`, `best-schedules`, `best-schedule-predictions`, `best-pruned-config`, `pruning-experiments`, or `comparison-results` to select which JSON artifact to import
+- `bert-matmul`, `best-schedules`, `best-schedule-transformations`, `best-schedule-predictions`, `best-pruned-config`, `pruning-experiments`, or `comparison-results` to select which JSON artifact to import
 - `--mode` to choose `api` (default) or `direct` DB connection
 - `--api-url` to override `DATA_AGGREGATOR_URL`
 - `best-schedules` command uses `DATA_AGGREGATOR_BEST_SCHEDULES_URL` by default
+- `best-schedule-transformations` command uses `DATA_AGGREGATOR_BEST_SCHEDULE_TRANSFORMATIONS_URL` by default
 - `best-schedule-predictions` command uses `DATA_AGGREGATOR_BEST_SCHEDULE_PREDICTIONS_URL` by default
 - `best-pruned-config` command uses `DATA_AGGREGATOR_BEST_PRUNED_CONFIG_URL` by default
 - `pruning-experiments` command uses `DATA_AGGREGATOR_PRUNING_EXPERIMENTS_URL` by default
@@ -85,4 +89,5 @@ Options:
 - Regular uploads (from `qkv_mlp_run` and `metaschedule_best_schedules`) default to 10 seconds via `DATA_AGGREGATOR_TIMEOUT`.
 - Direct mode uses the sanitized profile table name: lowercase, non-alphanumerics replaced by `_`, and a leading digit is prefixed with `p`.
 - `comparison-results` keeps a fixed snapshot table keyed by row label (`shape:*` + `overall`), so each import overwrites existing rows instead of appending history.
+- `best-schedule-transformations` is snapshot-based, keyed by `(kernel, m, k, n)`; each import refreshes the full shape set for the target CPU profile.
 - `best-schedule-predictions` is also snapshot-based, keyed by `(kernel, m, k, n)`; each import refreshes the full shape set for the target CPU profile.

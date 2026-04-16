@@ -17,17 +17,19 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
 LOGGER = logging.getLogger("parse_best_schedule_transformations")
 
 RESEARCH_DIR = Path(__file__).resolve().parents[1]
+REPO_DIR = Path(__file__).resolve().parents[2]
 DEFAULT_INPUT_PATH = RESEARCH_DIR / "results" / "metaschedule" / "best_schedules.json"
 DEFAULT_OUTPUT_PATH = (
     RESEARCH_DIR / "results" / "metaschedule" / "best_schedule_transformations.json"
 )
+DEFAULT_UPLOAD_TIMEOUT = 120
 
 
 def _parse_args() -> argparse.Namespace:
@@ -72,6 +74,31 @@ def _parse_args() -> argparse.Namespace:
         "--pager",
         action="store_true",
         help="Show table in less -SR for horizontal scrolling when supported",
+    )
+    parser.add_argument(
+        "--no-upload",
+        action="store_true",
+        help="Do not upload parsed transformation rows to data_aggregator",
+    )
+    parser.add_argument(
+        "--upload-url",
+        type=str,
+        default=None,
+        help=(
+            "Override DATA_AGGREGATOR_BEST_SCHEDULE_TRANSFORMATIONS_URL for upload"
+        ),
+    )
+    parser.add_argument(
+        "--profile",
+        type=str,
+        default=None,
+        help="Override DATA_AGGREGATOR_PROFILE for upload",
+    )
+    parser.add_argument(
+        "--upload-timeout",
+        type=int,
+        default=DEFAULT_UPLOAD_TIMEOUT,
+        help="Upload timeout in seconds (default: 120)",
     )
     return parser.parse_args()
 
@@ -326,6 +353,50 @@ def _is_missing(value: Any) -> bool:
     return False
 
 
+def _sanitize_json_value(value: Any) -> Any:
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return None
+        return value
+
+    if isinstance(value, dict):
+        return {k: _sanitize_json_value(v) for k, v in value.items()}
+
+    if isinstance(value, list):
+        return [_sanitize_json_value(item) for item in value]
+
+    if isinstance(value, tuple):
+        return [_sanitize_json_value(item) for item in value]
+
+    return value
+
+
+def _upload_rows(
+    rows: List[Dict[str, Any]],
+    profile: Optional[str],
+    upload_url: Optional[str],
+    timeout: Optional[int],
+) -> bool:
+    try:
+        from research.workloads.common.data_aggregator_client import (  # pylint: disable=import-outside-toplevel
+            upload_best_schedule_transformations,
+        )
+    except ModuleNotFoundError:
+        if str(REPO_DIR) not in sys.path:
+            sys.path.insert(0, str(REPO_DIR))
+        from research.workloads.common.data_aggregator_client import (  # type: ignore  # pylint: disable=import-outside-toplevel
+            upload_best_schedule_transformations,
+        )
+
+    return upload_best_schedule_transformations(
+        rows,
+        url=upload_url,
+        profile=profile,
+        dedupe=True,
+        timeout=timeout,
+    )
+
+
 def _format_table(dataframe: pd.DataFrame) -> str:
     try:
         from tabulate import tabulate  # pylint: disable=import-outside-toplevel
@@ -482,14 +553,54 @@ def main() -> int:
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
 
     # Overwrite output on every run to keep the artifact deterministic.
-    output_records = df.where(pd.notnull(df), None).to_dict(orient="records")
+    raw_records = df.to_dict(orient="records")
+    output_records = _sanitize_json_value(raw_records)
+    if not isinstance(output_records, list):
+        raise ValueError("Transformation output must be a JSON array")
+
     with args.output_json.open("w", encoding="utf-8") as file_out:
-        json.dump(output_records, file_out, indent=2)
+        json.dump(output_records, file_out, indent=2, allow_nan=False)
 
     LOGGER.info("Parsed %d schedules", len(df))
     LOGGER.info("Found %d transformation columns", len(transform_cols))
     LOGGER.info("Using '%s' view for terminal output", args.view)
     LOGGER.info("Saved transformation summary JSON to %s", args.output_json)
+
+    if args.no_upload:
+        LOGGER.info("Skipping cloud upload (--no-upload set)")
+    else:
+        upload_df = _build_output_dataframe(
+            dataframe=printable_df,
+            transform_cols=transform_cols,
+            view="wide",
+            max_transform_cols=args.max_transform_cols,
+        )
+        if args.view != "wide":
+            LOGGER.info(
+                "Uploading wide-view rows to keep DB schema aligned with --view wide table output"
+            )
+
+        raw_upload_records = upload_df.to_dict(orient="records")
+        upload_records = _sanitize_json_value(raw_upload_records)
+        if not isinstance(upload_records, list):
+            raise ValueError("Upload payload must be a JSON array")
+
+        upload_ok = _upload_rows(
+            rows=upload_records,
+            profile=args.profile,
+            upload_url=args.upload_url,
+            timeout=args.upload_timeout,
+        )
+        if upload_ok:
+            LOGGER.info(
+                "Uploaded %d transformation rows to data_aggregator best_schedule_transformations",
+                len(upload_records),
+            )
+        else:
+            LOGGER.warning(
+                "Transformation upload failed; JSON file is still saved at %s",
+                args.output_json,
+            )
 
     _print_with_optional_pager(_format_table(output_df), use_pager=args.pager)
     return 0

@@ -11,15 +11,17 @@ config({ path: ".env" });
 
 const DEFAULT_IDLE_DISCONNECT_MS = 5 * 60 * 1000;
 const DEFAULT_ACTIVITY_CHECK_MS = 10 * 1000;
-const TEST_PROCESS_GREP_PATTERN = "qkv_mlp_run|metaschedule_tune|import_bert_matmul_results|predict_knobs";
+const TEST_PROCESS_GREP_PATTERN = "qkv_mlp_run|metaschedule_tune|import_bert_matmul_results|predict_knobs|parse_best_schedule_transformations";
 
 const TEST_PROCESS_PATTERNS = [
 	/research\.workloads\.bert\.matmul\.qkv_mlp_run/,
 	/research\.workloads\.bert\.metaschedule\.metaschedule_tune/,
 	/research\.workloads\.bert\.ml_schedule_predictor\.predict_knobs/,
+	/research\.analysis\.parse_best_schedule_transformations/,
 	/\bscripts\/import_bert_matmul_results\.py\b/,
 	/\bimport_bert_matmul_results\.py\b/,
 	/\bpredict_knobs\.py\b/,
+	/\bparse_best_schedule_transformations\.py\b/,
 	/\bqkv_mlp_run\.py\b/,
 	/\bmetaschedule_tune\.py\b/,
 ];
@@ -39,8 +41,6 @@ type DbRuntime = {
 	close: () => Promise<void>;
 	healthCheck: () => Promise<void>;
 };
-
-const DEFAULT_NEON_FALLBACK_CPU_PROFILES = ["i7-13700"];
 
 let runtime: DbRuntime | null = null;
 let monitorTimer: NodeJS.Timeout | null = null;
@@ -76,10 +76,6 @@ function getActivityCheckMs(): number {
 	return DEFAULT_ACTIVITY_CHECK_MS;
 }
 
-function normalizeCpuProfileToken(value: string): string {
-	return value.trim().toLowerCase().replace(/\s+/g, "");
-}
-
 function detectHostCpuProfile(): string | null {
 	const model = os.cpus()?.[0]?.model ?? "";
 	const exact = model.match(/\bi[3579]-\d{4,5}[a-z]?\b/i);
@@ -95,38 +91,15 @@ function detectHostCpuProfile(): string | null {
 	return null;
 }
 
-function getNeonFallbackCpuProfiles(): string[] {
-	const raw = process.env.DB_NEON_FALLBACK_CPU_PROFILES?.trim();
-	if (!raw) {
-		return DEFAULT_NEON_FALLBACK_CPU_PROFILES;
-	}
-
-	return raw
-		.split(",")
-		.map((entry) => normalizeCpuProfileToken(entry))
-		.filter((entry) => entry.length > 0);
-}
-
-function shouldUseAutoFallbackByCpu(): boolean {
-	const hostProfile = detectHostCpuProfile();
-	if (!hostProfile) {
-		return false;
-	}
-
-	const normalizedHost = normalizeCpuProfileToken(hostProfile);
-	const allowList = getNeonFallbackCpuProfiles();
-	return allowList.includes(normalizedHost);
-}
-
 function getDbDriverPreference(): DbDriver {
 	const raw = process.env.DB_DRIVER?.trim().toLowerCase();
 	if (raw === "pg" || raw === "neon" || raw === "auto") {
 		return raw;
 	}
 
-	// Default to pg everywhere, and enable automatic pg->neon fallback
-	// only for selected host CPU profiles (for example i7-13700).
-	return shouldUseAutoFallbackByCpu() ? "auto" : "pg";
+	// Default to auto so pg connectivity issues can transparently fall back
+	// to Neon HTTP when available.
+	return "auto";
 }
 
 function isNetworkConnectionError(error: unknown): boolean {
