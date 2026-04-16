@@ -88,14 +88,14 @@ for kernel_name, group in df.groupby("kernel", sort=False):
         index="variant",
         columns="M",
         values="latency_us",
-        aggfunc="median",       # keep best if duplicates
+        aggfunc="mean",
     )
     if "std_us" in group.columns:
         std_pivot = group.pivot_table(
             index="variant",
             columns="M",
             values="std_us",
-            aggfunc="median",
+            aggfunc="mean",
         ).reindex_like(latency_pivot)
     else:
         std_pivot = pd.DataFrame(index=latency_pivot.index, columns=latency_pivot.columns)

@@ -1037,9 +1037,48 @@ Results are recorded directly from tuning logs into the unified results file:
 research/results/bert_matmul_results.json
 ```
 
+MetaSchedule best-trace snapshots are also written to:
+
+```
+research/results/metaschedule/best_schedules.json
+```
+
+### Phase 4.3 — Parse Best-Schedule Transformations
+
+Use the parser below to extract schedule transformations (and chosen values)
+from `best_schedules.json`, print a tabular view, and overwrite a JSON summary.
+
+```bash
+# run from repository root (recommended)
+python3 research/analysis/parse_best_schedule_transformations.py --verbose
+
+# explicit paths (same defaults, shown for clarity)
+python3 research/analysis/parse_best_schedule_transformations.py \
+   --input-json research/results/metaschedule/best_schedules.json \
+   --output-json research/results/metaschedule/best_schedule_transformations.json
+
+# terminal-friendly compact table (default)
+python3 research/analysis/parse_best_schedule_transformations.py --view compact --max-transform-cols 8
+
+# long vertical view (one transformation per row)
+python3 research/analysis/parse_best_schedule_transformations.py --view long
+
+# full wide table + horizontal scroll via pager (requires 'less')
+python3 research/analysis/parse_best_schedule_transformations.py --view wide --pager
+
+# if your cwd is research/analysis
+python3 parse_best_schedule_transformations.py --verbose
+```
+
+Output JSON (overwritten on each run):
+
+```
+research/results/metaschedule/best_schedule_transformations.json
+```
+
 ---
 
-### Phase 4.3 — Comparative Analysis
+### Phase 4.4 — Comparative Analysis
 
 Manual vs MetaSchedule performance comparison completed.
 
