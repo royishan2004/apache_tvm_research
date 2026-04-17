@@ -18,7 +18,7 @@ from research.workloads.bert.bert_shapes import (
     M_LIST,
 )
 
-TARGET = Target("llvm -num-cores=8")
+TARGET = Target("llvm -num-cores=12")
 WORK_DIR_BASE = "research/results/metaschedule"
 
 KERNELS = {

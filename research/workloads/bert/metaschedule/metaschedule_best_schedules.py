@@ -114,6 +114,28 @@ def _append_to_json_array(path: str, entry: dict) -> None:
             json.dump(existing, f, indent=2)
 
 
+def _group_by_variant(records: List[dict]) -> List[dict]:
+    """Group entries so records with the same variant stay together.
+
+    Preserves first-seen variant order and in-variant insertion order.
+    """
+    buckets = {}
+    variant_order = []
+
+    for record in records:
+        variant = record.get("variant") if isinstance(record, dict) else None
+        key = str(variant) if variant is not None else ""
+        if key not in buckets:
+            buckets[key] = []
+            variant_order.append(key)
+        buckets[key].append(record)
+
+    grouped = []
+    for key in variant_order:
+        grouped.extend(buckets[key])
+    return grouped
+
+
 def _extract_decisions(trace) -> List[dict]:
     """Walk every instruction in the trace and pull out its decision."""
     decisions = []
@@ -147,11 +169,11 @@ def save_best_schedule(
     schedules_file: str = SCHEDULES_FILE,
     results_file: str = RESULTS_FILE,
 ) -> None:
-    """Append (or update) the best schedule for a given kernel + M value."""
+    """Append the best schedule for a given kernel + M value."""
     profile = resolve_profile(profile)
     trace = best_record.trace
 
-    new_entry = {
+    schedule_entry = {
         "profile": profile,
         "variant": variant,
         "kernel": kernel_name,
@@ -168,36 +190,17 @@ def save_best_schedule(
 
     # Append to JSON array without rewriting the whole file in normal cases.
     try:
-        _append_to_json_array(schedules_file, new_entry)
+        _append_to_json_array(schedules_file, schedule_entry)
     except Exception as e:
         print(f"⚠ Failed to append to {schedules_file}: {e}")
 
-    upload_best_schedules([new_entry], profile=profile)
+    upload_best_schedules([schedule_entry], profile=profile)
 
     # Also update the global results summary file so we don't need to parse
-    # logs separately. Replace any existing metaschedule entry for same
-    # (kernel, M) and append a new one.
+    # logs separately. Append, group by variant, and rewrite with indent=2
+    # to match qkv/mlp formatting and ordering conventions.
     try:
-        results = []
-        if os.path.exists(results_file):
-            with open(results_file, "r") as f:
-                try:
-                    results = json.load(f)
-                except json.JSONDecodeError:
-                    results = []
-        if not isinstance(results, list):
-            results = []
-
-        results = [
-            r for r in results
-            if not (
-                r.get("variant") == variant
-                and r.get("kernel") == kernel_name
-                and r.get("M") == M
-            )
-        ]
-
-        new_entry = {
+        result_entry = {
             "profile": profile,
             "kernel": kernel_name,
             "variant": variant,
@@ -211,17 +214,19 @@ def save_best_schedule(
             "source": source_label,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
-        results.append(new_entry)
-
-        # Keep other entries; sort for stability
-        results.sort(key=lambda r: (r.get("kernel", ""), r.get("variant", ""), r.get("M", 0)))
         os.makedirs(os.path.dirname(results_file), exist_ok=True)
+        results = [r for r in _load_existing(results_file) if isinstance(r, dict)]
+        results.append(result_entry)
+        grouped_results = _group_by_variant(results)
         with open(results_file, "w") as f:
-            json.dump(results, f, indent=2)
+            json.dump(grouped_results, f, indent=2)
 
-        print(f"✔ Wrote MetaSchedule summary entry for variant={variant} kernel={kernel_name} M={M} to {results_file}")
+        print(
+            f"✔ Appended MetaSchedule summary entry for variant={variant} "
+            f"kernel={kernel_name} M={M} to {results_file}"
+        )
 
-        upload_results([new_entry], profile=profile)
+        upload_results([result_entry], profile=profile)
     except Exception as e:
         # Non-fatal: log error so user can debug why results file wasn't updated
         print(f"⚠ Failed to update {results_file}: {e}")
