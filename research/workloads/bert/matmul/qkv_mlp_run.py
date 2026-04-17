@@ -227,7 +227,7 @@ for iteration in range(1, iterations + 1):
         if new_entries:
             upload_results(new_entries, profile=profile)
 
-        if (run_all_variants or iterations > 1) and not (iteration == iterations and combo_idx == total_combos):
+        if (run_all_variants or run_all_kernels or iterations > 1) and not (iteration == iterations and combo_idx == total_combos):
             print("  [Cooldown] Sleeping for 3 seconds to mitigate thermal throttling...")
             time.sleep(3)
 
