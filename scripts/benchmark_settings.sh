@@ -10,16 +10,14 @@ echo "Setting min and max frequency"
 sudo cpupower frequency-set -d 3.0GHz
 sudo cpupower frequency-set -u 3.0GHz
 
-echo "Setting OpenMP environment variables"
-#export OMP_NUM_THREADS=12
-#export OMP_PLACES=threads
-#export OMP_PROC_BIND=spread
-export OMP_PROC_BIND=false
-
-echo "Setting number of TVM Threads"
+# Force TVM thread pool to 12 and bind threads
 export TVM_NUM_THREADS=12
+export TVM_BIND_THREADS=1
 
-echo "Benchmark environment ready"
+# OpenMP: allow 12 threads and explicitly map to all CPUs
+export OMP_NUM_THREADS=12
+export OMP_PLACES="{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11}"
+export OMP_PROC_BIND=spread
 
-echo "Ensuring taskset across all cores"
-exec taskset -c 0-11 bash
+# Allow execution on all cores
+taskset -c 0-11 bash
