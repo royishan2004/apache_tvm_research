@@ -841,6 +841,18 @@ style K fill:#1f3a3a,stroke:#56d4dd,color:#ffffff,stroke-width:2px
 
 ---
 
+**Execution Environment Setup — Run first**
+
+Before running any benchmark or schedule scripts, initialize the controlled environment and enter the pinned shell:
+
+```bash
+
+./scripts/benchmark_settings.sh
+
+```
+
+Run all subsequent benchmark and schedule commands from within the shell started by this script. This locks CPU frequency, sets thread affinity, and reduces OS-level variability for stable microbenchmark results.
+
 ## View Collected Results (Print)
 
 ```bash
