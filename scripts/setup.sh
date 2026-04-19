@@ -130,6 +130,7 @@ fi
 # APPLY TVM MULTITHREADING PATCH
 ########################################
 log "Applying multithreading patch"
+cd "$TVM_ROOT"
 git reset --hard HEAD  # Ensure a clean slate before patching
 cat << 'EOF_PATCH' > tvm_multithreading.patch
 diff --git a/src/runtime/thread_pool.cc b/src/runtime/thread_pool.cc
@@ -303,12 +304,19 @@ fi
 log "Setting persistent environment variables in venv"
 
 if ! grep -q "TVM_HOME=" "$VENV_DIR/bin/activate"; then
-    echo "export TVM_HOME="$TVM_ROOT"" >> "$VENV_DIR/bin/activate"
-    echo "export PYTHONPATH="$TVM_ROOT/python:$WORKSPACE_DIR:\$PYTHONPATH"" >> "$VENV_DIR/bin/activate"
-    echo "export LD_LIBRARY_PATH="$TVM_ROOT/build:$TVM_ROOT/build/lib:\$LD_LIBRARY_PATH"" >> "$VENV_DIR/bin/activate"
+    echo "export TVM_HOME=\"$TVM_ROOT\"" >> "$VENV_DIR/bin/activate"
+    echo "export PYTHONPATH=\"$TVM_ROOT/python:$WORKSPACE_DIR:\${PYTHONPATH:-}\"" >> "$VENV_DIR/bin/activate"
+    echo "export LD_LIBRARY_PATH=\"$TVM_ROOT/build:$TVM_ROOT/build/lib:\${LD_LIBRARY_PATH:-}\"" >> "$VENV_DIR/bin/activate"
+else
+    # Ensure previously written lines are compatible with nounset mode.
+    sed -i -E "s|^export TVM_HOME=.*$|export TVM_HOME=\"$TVM_ROOT\"|" "$VENV_DIR/bin/activate"
+    sed -i -E "s|^export PYTHONPATH=.*$|export PYTHONPATH=\"$TVM_ROOT/python:$WORKSPACE_DIR:\${PYTHONPATH:-}\"|" "$VENV_DIR/bin/activate"
+    sed -i -E "s|^export LD_LIBRARY_PATH=.*$|export LD_LIBRARY_PATH=\"$TVM_ROOT/build:$TVM_ROOT/build/lib:\${LD_LIBRARY_PATH:-}\"|" "$VENV_DIR/bin/activate"
 fi
 
+set +u
 source "$VENV_DIR/bin/activate"
+set -u
 
 ########################################
 # INSTALL Python Packages (TVM Editable + Research dependencies)
