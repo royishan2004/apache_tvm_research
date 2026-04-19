@@ -85,6 +85,8 @@ run_all, selected_kernel, iterations = _parse_args()
 if not ensure_data_aggregator_connection_or_prompt("metaschedule_tune"):
     raise SystemExit(1)
 
+print(f"\nTVM Threads detected: {tvm.runtime.num_threads()}\n")
+
 if run_all:
     print(f"Mode: all kernels ({', '.join(KERNELS)})")
 elif selected_kernel:

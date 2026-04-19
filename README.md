@@ -106,6 +106,9 @@ As such, observing the **standard deviation** alongside the absolute minimum exe
 **Continuous Execution and Thermal Throttling:**
 During extensive continuous execution (such as running many iterations or sweeping all variants back-to-back), modern CPUs quickly exhaust their turbo boost time bounds (e.g., PL2 state) and step down to lower sustained power limits (PL1). This thermal and power throttling can inflate latencies by up to 2× starting from the 2nd or 3rd consecutive iteration. To ensure baseline consistency and measure true algorithmic limits rather than the cooling capacity of the host system, benchmark runners must incorporate artificial cooldown periods (e.g., 3-second sleep) between heavy test batches, allowing the CPU to shed heat and reset boost timers.
 
+**Intel Hybrid Architecture Thread Allocation and Core Affinity Limitations:**
+A critical challenge when working sequentially or in parallel over Intel hybrid processor designs (like Alder Lake 2P+8E configurations) or their hypervisors is thread scheduling. By default, standard C++ runtimes and TVM's execution backend frequently halve the estimated hardware thread count (e.g. ignoring hyperthreads or defaulting to base performance core estimations, dividing a 12-thread capacity down to 6). Furthermore, the thread pool limits task placements to `kBig` or `kLittle` core affinities without comprehensively mapping independent computation blocks globally across both types. To fully saturate all computing resources dynamically across available thread contexts, we explicitly uncap the hardcoded hardware concurrency restrictions in the C++ threading backend, enabling custom `kSpecifyThreadShareAllCore` logic. Alongside this, overriding TVM’s environment parameters (`TVM_NUM_THREADS=12`, `TVM_BIND_THREADS=0`) guarantees that our manually tuned and parallelized TIR schedules can successfully distribute dense execution blocks over all logic processing threads, yielding immediate latency improvements.
+
 ---
 
 ### Trend 1 — Small strictly-aligned reduction tiles drastically cut latency
@@ -847,7 +850,7 @@ Before running any benchmark or schedule scripts, initialize the controlled envi
 
 ```bash
 
-./scripts/benchmark_settings.sh
+bash scripts/benchmark_settings.sh
 
 ```
 

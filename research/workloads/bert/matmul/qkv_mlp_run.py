@@ -106,6 +106,8 @@ if not ensure_data_aggregator_connection_or_prompt("qkv_mlp_run"):
     sys.exit(1)
 profile = resolve_profile()
 
+print(f"\nTVM Threads detected: {tvm.runtime.num_threads()}\n")
+
 if run_all_variants:
     run_plan = [
         #INTENTIONAL exclude of vec_k, rule_based and ml_guided for bypassing exception case and creating training data for rule-based model

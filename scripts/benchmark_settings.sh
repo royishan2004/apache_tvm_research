@@ -10,9 +10,12 @@ echo "Setting min and max frequency"
 sudo cpupower frequency-set -d 3.0GHz
 sudo cpupower frequency-set -u 3.0GHz
 
+# Ensure virtual environment and Python point to custom-patched TVM (prevents 4-thread throttling bug)
+export PYTHONPATH="$(pwd)/tvm/python:$(pwd)"
+
 # Force TVM thread pool to 12 and bind threads
 export TVM_NUM_THREADS=12
-export TVM_BIND_THREADS=1
+export TVM_BIND_THREADS=0
 
 # OpenMP: allow 12 threads and explicitly map to all CPUs
 export OMP_NUM_THREADS=12
