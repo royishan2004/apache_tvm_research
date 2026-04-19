@@ -22,5 +22,8 @@ export OMP_NUM_THREADS=12
 export OMP_PLACES="{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11}"
 export OMP_PROC_BIND=spread
 
+# Marker for Python scripts to verify settings are loaded
+export BENCHMARK_SETTINGS_ACTIVE=1
+
 # Allow execution on all cores
 taskset -c 0-11 bash

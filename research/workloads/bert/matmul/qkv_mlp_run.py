@@ -20,6 +20,7 @@ from research.workloads.common.data_aggregator_client import (
     resolve_profile,
     ensure_data_aggregator_connection_or_prompt,
 )
+from research.workloads.common.benchmark_environment import ensure_benchmark_settings_or_prompt
 
 KERNELS = {
     "qkv":        qkv_shape,
@@ -102,6 +103,8 @@ def _parse_args():
     return variant, kernel, run_all_variants, run_all_kernels, iterations
 
 variant, kernel, run_all_variants, run_all_kernels, iterations = _parse_args()
+if not ensure_benchmark_settings_or_prompt("qkv_mlp_run"):
+    sys.exit(1)
 if not ensure_data_aggregator_connection_or_prompt("qkv_mlp_run"):
     sys.exit(1)
 profile = resolve_profile()

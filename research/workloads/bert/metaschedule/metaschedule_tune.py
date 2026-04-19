@@ -11,6 +11,7 @@ from research.workloads.common.data_aggregator_client import (
     resolve_profile,
     ensure_data_aggregator_connection_or_prompt,
 )
+from research.workloads.common.benchmark_environment import ensure_benchmark_settings_or_prompt
 from research.workloads.bert.bert_shapes import (
     qkv_shape,
     mlp_expanded_shape,
@@ -82,6 +83,8 @@ def _parse_args():
 
 run_all, selected_kernel, iterations = _parse_args()
 
+if not ensure_benchmark_settings_or_prompt("metaschedule_tune"):
+    raise SystemExit(1)
 if not ensure_data_aggregator_connection_or_prompt("metaschedule_tune"):
     raise SystemExit(1)
 

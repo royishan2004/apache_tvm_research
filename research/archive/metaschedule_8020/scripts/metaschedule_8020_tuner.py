@@ -43,9 +43,7 @@ from research.workloads.common.data_aggregator_client import (
 	upload_comparison_results,
 	upload_pruning_experiments,
 )
-from research.workloads.common.matmul_templates import matmul_tir
-
-
+from research.workloads.common.benchmark_environment import ensure_benchmark_settings_or_prompt
 TARGET = Target("llvm -num-cores=8")
 WORK_DIR_BASE_DEFAULT = "research/results/metaschedule/8020"
 RESULTS_DIR = "research/results/metaschedule"
@@ -2511,7 +2509,10 @@ def main() -> int:
 	profile = resolve_profile(args.profile)
 	LOGGER.info("Profile: %s", profile)
 
-	if not ensure_data_aggregator_connection_or_prompt("metaschedule_8020_tuner"):
+	if not ensure_benchmark_settings_or_prompt("metaschedule_8020_tuner"):
+			return 1
+
+		if not ensure_data_aggregator_connection_or_prompt("metaschedule_8020_tuner"):
 		return 1
 
 	selected_kernels = _resolve_kernel_list(args)

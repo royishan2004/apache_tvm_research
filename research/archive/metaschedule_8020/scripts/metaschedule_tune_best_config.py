@@ -22,6 +22,7 @@ from research.workloads.common.data_aggregator_client import (
     ensure_data_aggregator_connection_or_prompt,
     resolve_profile,
 )
+from research.workloads.common.benchmark_environment import ensure_benchmark_settings_or_prompt
 from research.workloads.common.matmul_templates import matmul_tir
 
 TARGET = Target("llvm -num-cores=8")
@@ -250,6 +251,8 @@ def main() -> int:
     args = _parse_args()
     profile = resolve_profile(args.profile)
 
+    if not ensure_benchmark_settings_or_prompt("metaschedule_tune_best_config"):
+        return 1
     if not ensure_data_aggregator_connection_or_prompt("metaschedule_tune_best_config"):
         return 1
 
