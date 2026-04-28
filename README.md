@@ -36,7 +36,7 @@ This research is validated across two distinct CPU environments (both exposing 1
 | **L1-D cache**     | 48 KB (P-core), 32 KB (E-core)                        | 80 KB per P-core (32 KB I + 48 KB D); 96 KB per E-core (64 KB I + 32 KB D) — host Raptor Lake values exposed to VM |
 | **L2 cache**       | 1.25 MB (P-core), 2 MB (shared E-core cluster)       | 1.25–2 MB per P-core; 2–4 MB per E-core cluster (varies by SKU) |
 | **SIMD**           | AVX2 — 256-bit registers, 8 × float32 per instruction | AVX2 — 256-bit registers, 8 × float32 per instruction |
-| **OS / Compiler**  | Linux (WSL2), LLVM backend via TVM                    | Linux (VirtualBox VM), LLVM backend via TVM           |
+| **OS / Compiler**  | Linux, LLVM backend via TVM              | Linux (VirtualBox VM), LLVM backend via TVM           |
 
 ### Workload Shapes (BERT-base)
 
@@ -443,10 +443,10 @@ Key findings:
    parallel tiling).
 
 2. **Rule-based re-benchmark (fresh run, all 24 shapes):**
-   - Geometric-mean speedup vs baseline: **69.91×**
-   - Geometric-mean speedup vs `full`: **4.17×**
-   - Geometric-mean speedup vs best manual variant per shape: **3.72×**
-   - Geometric-mean ratio vs MetaSchedule: **1.70×**
+   - Geometric-mean speedup vs baseline: **132.61×**
+   - Geometric-mean speedup vs `full`: **4.36×**
+   - Geometric-mean speedup vs best manual variant per shape: **4.05×**
+   - Geometric-mean ratio vs MetaSchedule: **1.05×**
 
 3. **Rule-ablation check:** small changes tested after regeneration
    (`TK=4`, `TK=16`, and wider `TN` values) did not produce a stable
@@ -555,7 +555,7 @@ Re-validation (fresh all-kernel run, 24 shapes) after switching to `j_pack = 32`
 - QKV: **1.38×** faster
 - MLP-expand: **1.30×** faster
 - MLP-reduce: **1.09×** faster
-- rule_based/meta geometric-mean ratio: **1.90× → 1.52×**
+- rule_based/meta geometric-mean ratio: **1.90× → 1.05×**
 
 **→ Rule R8:** Set `j_vec` inner partition to `_VEC_WIDTH * 4` (32 for AVX2).
 
@@ -692,7 +692,7 @@ performance:
    reproducible research.
 
 On the regenerated dataset and fresh re-runs, the current rule-based
-system is typically **~1.52× of MetaSchedule performance** while
+system is typically **~1.05× of MetaSchedule performance** while
 satisfying all three properties.
 
 ---
@@ -1209,7 +1209,7 @@ python3 research/workloads/bert/ml_schedule_predictor/train_lightgbm_knob_models
 - ✔ Rule-based v2 refactored (cache_write + decompose_reduction + auto-unroll + TK=8)  
 - ✔ MetaSchedule-inspired 4× j-pack adopted (`j_vec = 32`)  
 - ✔ Write-back vectorization aligned to `j_pack=32` (strict ABBA geomean `0.9605×` vs previous write-back)  
-- ✔ Performance gap improved to ~1.52× of MetaSchedule (latest full re-run)  
+- ✔ Performance gap improved to ~1.05× of MetaSchedule (latest full re-run)  
 - ✔ Further enhancement investigation (TK=4, cache_read, TN=128 — documented)  
 - ✔ ML-guided LightGBM warm-start pipeline integrated (`ml_guided` variant + predictor scripts)
 
